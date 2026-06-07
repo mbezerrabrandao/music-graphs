@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "music-artist-graphs"
+version = "0.1.0"
+description = "Reproducible Last.fm music-artist graph pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "networkx>=3.2",
+  "scipy>=1.11",
+  "scikit-learn>=1.4",
+  "PyYAML>=6.0",
+  "gensim>=4.3",
+]
+
+[project.optional-dependencies]
+community = [
+  "python-igraph>=0.11",
+  "leidenalg>=0.10",
+]
+gae = [
+  "torch>=2.2",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.4",
+]
+
+[project.scripts]
+music-graphs = "music_graphs.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

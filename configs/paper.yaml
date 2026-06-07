@@ -1,0 +1,567 @@
+﻿project:
+  name: music-artist-graphs
+  mode: reproduce
+  state_dir: results/.pipeline_state
+  selection_report: results/selection_report.md
+
+paths:
+  lastfm_export_csv: data/raw/lastfm/recenttracks.csv
+
+optional:
+  semantic_reference: false
+  gae: false
+  ablations: false
+
+parameters:
+  sessions:
+    threshold_minutes: 60
+  behavioral_graph:
+    relation_mode: sequential
+    window_size_scrobbles: 5
+    minimum_shared_sessions: 2
+    edge_weight: shared_session_cosine
+    minimum_artist_scrobbles: 3
+    use_largest_connected_component: true
+  modularity:
+    resolutions: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.25, 2.5, 3.0, 4.0]
+    balanced_resolution: 2.25
+    granular_resolution: 4.0
+    seeds: [42, 43, 44, 45, 46]
+  node2vec:
+    dimensions: 64
+    walk_length: 40
+    walks_per_node: 10
+    context_window: 5
+    epochs: 10
+    p_values: [0.5, 1.0, 2.0]
+    q_values: [0.5, 1.0, 2.0]
+    selected_p: 2.0
+    selected_q: 2.0
+    balanced_k: 54
+    seeds: [42, 43, 44, 45, 46]
+  smooth_controls:
+    modes: [raw, smooth1, smooth2]
+    balanced_k: 54
+    seeds: [42, 43, 44, 45, 46]
+  genre_inference:
+    families: [raw, smooth1, smooth2, node2vec]
+    classifier: logistic_regression
+    class_weight: balanced
+    minimum_genre_support: 5
+    cv_folds: 5
+    cv_seeds: [42, 43, 44, 45, 46]
+    primary_metric: macro_f1
+
+stages:
+  audit_export:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/inspect_lastfm_export.py
+      - data/raw/lastfm/recenttracks.csv
+      - --output-dir
+      - results/data_audit
+    inputs:
+      - data/raw/lastfm/recenttracks.csv
+    outputs:
+      - results/data_audit
+
+  canonicalize:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/build_canonical_tables.py
+      - data/raw/lastfm/recenttracks.csv
+      - --output-dir
+      - data/interim
+    inputs:
+      - data/raw/lastfm/recenttracks.csv
+    outputs:
+      - data/interim/canonical_scrobbles.csv
+      - data/interim/canonical_artists.csv
+
+  session_audit:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/analyze_session_thresholds.py
+      - data/interim/canonical_scrobbles.csv
+      - --output-dir
+      - results/session_audit
+      - --thresholds
+      - "15"
+      - "30"
+      - "45"
+      - "60"
+      - "90"
+      - "120"
+    inputs:
+      - data/interim/canonical_scrobbles.csv
+    outputs:
+      - results/session_audit/inter_scrobble_gap_quantiles.csv
+      - results/session_audit/session_threshold_sensitivity.csv
+
+  select_session_threshold:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/select_session_threshold.py
+      - results/session_audit/inter_scrobble_gap_quantiles.csv
+      - --output-dir
+      - results/selection_evidence
+      - --candidates
+      - "15"
+      - "30"
+      - "45"
+      - "60"
+      - "90"
+      - "120"
+      - --expected-selected
+      - "60"
+    inputs:
+      - results/session_audit/inter_scrobble_gap_quantiles.csv
+    outputs:
+      - results/selection_evidence/session_threshold_selection.json
+      - results/selection_evidence/session_threshold_selection.md
+
+  build_sessions:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/build_listening_sessions.py
+      - data/interim/canonical_scrobbles.csv
+      - --output-root
+      - data/interim/sessions
+      - --threshold-minutes
+      - "60"
+      - --long-session-minutes
+      - "480"
+    inputs:
+      - data/interim/canonical_scrobbles.csv
+      - results/selection_evidence/session_threshold_selection.json
+    outputs:
+      - data/interim/sessions/threshold_60m/scrobbles_with_sessions.csv
+      - data/interim/sessions/threshold_60m/listening_sessions.csv
+
+  build_behavioral_graph:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/graphs/run_behavioral_graph_pipeline.py
+      - data/interim/sessions/threshold_60m/scrobbles_with_sessions.csv
+      - --edge-output-root
+      - data/interim/listening_graphs
+      - --processed-output-dir
+      - data/processed/listening_graphs/sequential_k5_support2_min3
+      - --mode
+      - sequential
+      - --window-size
+      - "5"
+      - --min-shared-session-thresholds
+      - "1"
+      - "2"
+      - "3"
+      - "5"
+      - "10"
+      - --progress-every
+      - "1000"
+      - --min-scrobbles
+      - "3"
+      - --min-shared-sessions
+      - "2"
+      - --weight-column
+      - shared_session_cosine
+    inputs:
+      - data/interim/sessions/threshold_60m/scrobbles_with_sessions.csv
+    outputs:
+      - data/interim/listening_graphs/sequential_k5/min_shared_sessions_sensitivity.csv
+      - data/processed/listening_graphs/sequential_k5_support2_min3/graph_largest_component.graphml
+      - data/processed/listening_graphs/sequential_k5_support2_min3/nodes_largest_component.csv
+
+  summarize_graph_support:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/summarize_graph_support.py
+      - data/interim/listening_graphs/sequential_k5/min_shared_sessions_sensitivity.csv
+      - --output-dir
+      - results/selection_evidence
+      - --selected-support
+      - "2"
+    inputs:
+      - data/interim/listening_graphs/sequential_k5/min_shared_sessions_sensitivity.csv
+    outputs:
+      - results/selection_evidence/graph_support_selection.json
+      - results/selection_evidence/graph_support_selection.md
+
+  fetch_musicbrainz:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/run_musicbrainz_fetch.py
+      - data/interim/canonical_artists.csv
+      - --cache-dir
+      - data/raw/musicbrainz/artist_genres
+      - --output-dir
+      - data/interim/musicbrainz
+      - --delay-seconds
+      - "1.1"
+      - --max-retries
+      - "4"
+      - --save-progress-every
+      - "25"
+    inputs:
+      - data/interim/canonical_artists.csv
+    outputs:
+      - data/interim/musicbrainz/artist_genre_fetch_manifest.csv
+
+  prepare_genre_labels:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/build_musicbrainz_genre_tables.py
+      - data/interim/canonical_artists.csv
+      - --cache-dir
+      - data/raw/musicbrainz/artist_genres
+      - --output-dir
+      - data/interim/musicbrainz
+      - --graph-nodes-csv
+      - data/processed/listening_graphs/sequential_k5_support2_min3/nodes_largest_component.csv
+    inputs:
+      - data/interim/canonical_artists.csv
+      - data/interim/musicbrainz/artist_genre_fetch_manifest.csv
+      - data/processed/listening_graphs/sequential_k5_support2_min3/nodes_largest_component.csv
+    outputs:
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - data/interim/musicbrainz/artist_genres_long.csv
+
+  run_modularity_baselines:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_behavioral_community_baselines.py
+      - data/processed/listening_graphs/sequential_k5_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/behavioral_baselines_balanced_grid
+      - --resolutions
+      - "0.5"
+      - "0.75"
+      - "1.0"
+      - "1.25"
+      - "1.5"
+      - "2.0"
+      - "2.25"
+      - "2.5"
+      - "3.0"
+      - "4.0"
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+    inputs:
+      - data/processed/listening_graphs/sequential_k5_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - results/behavioral_baselines_balanced_grid/partitions
+
+  summarize_modularity_grid:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/summarize_modularity_grid.py
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - --output-dir
+      - results/selection_evidence
+      - --balanced-resolution
+      - "2.25"
+    inputs:
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+    outputs:
+      - results/selection_evidence/modularity_resolution_grid_summary.csv
+      - results/selection_evidence/modularity_resolution_selection.md
+
+  run_node2vec:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_node2vec_baseline.py
+      - data/processed/listening_graphs/sequential_k5_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/node2vec_final_candidates
+      - --p-values
+      - "0.5"
+      - "1.0"
+      - "2.0"
+      - --q-values
+      - "0.5"
+      - "1.0"
+      - "2.0"
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --k-values
+      - "54"
+      - --dimensions
+      - "64"
+      - --walk-length
+      - "40"
+      - --walks-per-node
+      - "10"
+      - --context-window
+      - "5"
+      - --epochs
+      - "10"
+    inputs:
+      - data/processed/listening_graphs/sequential_k5_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - results/node2vec_final_candidates/embeddings
+      - results/node2vec_final_candidates/partitions
+
+  select_node2vec:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/select_node2vec_balanced.py
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - --output-dir
+      - results/selection_evidence
+      - --balanced-k
+      - "54"
+      - --expected-p
+      - "2.0"
+      - --expected-q
+      - "2.0"
+      - --expected-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+    inputs:
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+    outputs:
+      - results/selection_evidence/node2vec_balanced_pq_summary.csv
+      - results/selection_evidence/node2vec_walk_bias_selection.json
+      - results/selection_evidence/node2vec_walk_bias_selection.md
+
+  run_smooth2_control:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_behavioral_feature_controls.py
+      - data/processed/listening_graphs/sequential_k5_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/behavioral_feature_controls
+      - --modes
+      - raw
+      - smooth1
+      - smooth2
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --k-values
+      - "54"
+    inputs:
+      - data/processed/listening_graphs/sequential_k5_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/behavioral_feature_controls/behavioral_feature_control_runs.csv
+      - results/behavioral_feature_controls/embeddings
+      - results/behavioral_feature_controls/partitions
+
+  uniform_evaluation:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/run_core_uniform_evaluation.py
+      - --labels-csv
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/uniform_balanced_evaluation
+      - --supports
+      - "1"
+      - "2"
+      - "3"
+      - "5"
+      - --expected-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --behavioral-baseline-runs-csv
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - --behavioral-baseline-partition-root
+      - results/behavioral_baselines_balanced_grid
+      - --node2vec-runs-csv
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - --node2vec-partition-root
+      - results/node2vec_final_candidates
+      - --smooth2-runs-csv
+      - results/behavioral_feature_controls/behavioral_feature_control_runs.csv
+      - --smooth2-partition-root
+      - results/behavioral_feature_controls
+    inputs:
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - results/behavioral_feature_controls/behavioral_feature_control_runs.csv
+      - results/selection_evidence/node2vec_walk_bias_selection.json
+    outputs:
+      - results/uniform_balanced_evaluation/primary_balanced_comparison.csv
+      - results/uniform_balanced_evaluation/uniform_partition_stability_summary.csv
+
+  genre_inference:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_genre_inference_benchmark.py
+      - --labels-csv
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --behavioral-control-embeddings-dir
+      - results/behavioral_feature_controls/embeddings
+      - --node2vec-embeddings-dir
+      - results/node2vec_final_candidates/embeddings
+      - --output-dir
+      - results/genre_inference_benchmark
+      - --families
+      - raw
+      - smooth1
+      - smooth2
+      - node2vec
+      - --expected-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --cv-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --cv-folds
+      - "5"
+      - --minimum-genre-support
+      - "5"
+      - --top-k
+      - "3"
+    inputs:
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - results/behavioral_feature_controls/embeddings
+      - results/node2vec_final_candidates/embeddings
+    outputs:
+      - results/genre_inference_benchmark/classification_cv_summary.csv
+      - results/genre_inference_benchmark/predictions_unknown_selected_family.csv
+
+  selection_report:
+    enabled: true
+    command:
+      - "{python}"
+      - scripts/write_selection_report.py
+      - --config
+      - configs/paper.yaml
+    inputs:
+      - results/selection_evidence/session_threshold_selection.json
+      - results/selection_evidence/graph_support_selection.json
+      - results/selection_evidence/modularity_resolution_selection.json
+      - results/selection_evidence/node2vec_walk_bias_selection.json
+      - results/genre_inference_benchmark/classification_cv_summary.csv
+    outputs:
+      - results/selection_report.md
+
+  semantic_reference:
+    enabled: true
+    command: []
+    inputs: []
+    outputs: []
+
+  graph_autoencoder:
+    enabled: true
+    command: []
+    inputs: []
+    outputs: []
+
+  ablations:
+    enabled: true
+    command: []
+    inputs: []
+    outputs: []
+
+decisions:
+  - decision: session_threshold_minutes
+    status: computed_and_validated
+    candidates: [15, 30, 45, 60, 90, 120]
+    selected: 60
+    selection_rule: Closest tested threshold to the p95 inter-scrobble gap.
+    uses_external_genres: false
+
+  - decision: behavioral_relation_mode
+    status: frozen_after_methodological_comparison
+    candidates: [sequential_k5, temporal_30m]
+    selected: sequential_k5
+    selection_rule: Prefer a bounded local context that limits long-session effects while preserving a sufficiently large connected graph.
+    uses_external_genres: false
+
+  - decision: minimum_shared_sessions
+    status: reported_and_validated
+    candidates: [1, 2, 3, 5, 10]
+    selected: 2
+    selection_rule: Require repeated co-occurrence while retaining a broad active graph and a dominant connected component.
+    uses_external_genres: false
+
+  - decision: behavioral_edge_weight
+    status: frozen
+    selected: shared_session_cosine
+    selection_rule: Normalize repeated shared-session evidence to reduce domination by highly active artists.
+    uses_external_genres: false
+
+  - decision: minimum_artist_scrobbles
+    status: frozen
+    selected: 3
+    selection_rule: Exclude extremely sparse artist activity while retaining the broad behavioral graph.
+    uses_external_genres: false
+
+  - decision: modularity_balanced_resolution
+    status: frozen_after_exploratory_analysis
+    selected: 2.25
+    selection_rule: Report the exploratory structural-versus-semantic trade-off transparently. Do not automatically optimize resolution against genres for a new user history.
+    uses_external_genres: true
+
+  - decision: node2vec_balanced_k
+    status: frozen_balanced_scale
+    selected: 54
+    selection_rule: Match the balanced community scale of the structural baselines rather than maximize silhouette over an indefinitely expanding k range.
+    uses_external_genres: false
+
+  - decision: node2vec_walk_bias
+    status: computed_and_validated
+    candidates:
+      p: [0.5, 1.0, 2.0]
+      q: [0.5, 1.0, 2.0]
+      seeds: [42, 43, 44, 45, 46]
+    selected: {p: 2.0, q: 2.0}
+    selection_rule: Maximum mean silhouette across five seeds within the balanced k=54 scale.
+    uses_external_genres: false
+
+  - decision: downstream_genre_inference_representation
+    status: computed_after_unsupervised_freeze
+    candidates: [raw, smooth1, smooth2, node2vec]
+    selected: node2vec
+    selection_rule: Highest mean macro-F1 under repeated stratified cross-validation after freezing the unsupervised benchmark.
+    uses_external_genres: true
+

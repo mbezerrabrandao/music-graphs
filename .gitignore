@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local-only migration helpers and inventories
+.dev_migration/
+legacy_python_inventory.txt
+legacy_result_inventory.txt
+legacy_cli_help.txt
+
+# Private data and caches
+data/raw/
+data/interim/
+data/processed/
+data/private/
+data/*.csv
+data/**/*.csv
+data/**/*.json
+!data/sample/**
+!data/README.md
+!data/raw/lastfm/recenttracks.csv
+
+notebooks/**
+docs/**
+
+# Generated results and resumable state
+notebooks/**
+results/**
+reports/**
+!results/README.md

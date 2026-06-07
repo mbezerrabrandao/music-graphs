@@ -1,0 +1,11 @@
+uts,utc_time,artist,artist_mbid,album,album_mbid,track,track_mbid
+"1704103200","01 Jan 2024, 10:00","Sample Artist A","","Sample Album One","","Opening Track",""
+"1704103500","01 Jan 2024, 10:05","Sample Artist A","","Sample Album One","","Second Track",""
+"1704103860","01 Jan 2024, 10:11","Sample Artist B","","Sample Album Two","","City Lights",""
+"1704104280","01 Jan 2024, 10:18","Sample Artist C","","Sample Album Three","","Quiet Room",""
+"1704104700","01 Jan 2024, 10:25","Sample Artist B","","Sample Album Two","","Late Signal",""
+"1704105120","01 Jan 2024, 10:32","Sample Artist D","","Sample Album Four","","Transit",""
+"1704105540","01 Jan 2024, 10:39","Sample Artist E","","Sample Album Five","","Small Wave",""
+"1704105960","01 Jan 2024, 10:46","Sample Artist C","","Sample Album Three","","Window Seat",""
+"1704106380","01 Jan 2024, 10:53","Sample Artist F","","Sample Album Six","","Northbound",""
+"1704106800","01 Jan 2024, 11:00","Sample Artist A","","Sample Album One","","Closing Track",""

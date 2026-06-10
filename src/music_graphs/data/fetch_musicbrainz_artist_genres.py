@@ -435,6 +435,32 @@ def fetch_artist_genres(
         )
     )
 
+    failed = manifest.loc[
+        manifest["status"].eq("failed")
+    ].copy()
+
+    missing_cache_files = [
+        mbid
+        for mbid in mbids
+        if not cache_file_for_mbid(cache_dir, mbid).exists()
+    ]
+
+    if not failed.empty or missing_cache_files:
+        failed_mbids = failed["artist_mbid"].astype(str).tolist()
+        problem_mbids = sorted(set(failed_mbids + missing_cache_files))
+        preview = ", ".join(problem_mbids[:10])
+        suffix = (
+            ""
+            if len(problem_mbids) <= 10
+            else f", ... ({len(problem_mbids)} total)"
+        )
+
+        raise RuntimeError(
+            "MusicBrainz fetch did not complete for every MBID. "
+            "Re-run the fetch stage before preparing genre labels. "
+            f"Problem MBIDs: {preview}{suffix}"
+        )
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

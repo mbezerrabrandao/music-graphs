@@ -21,6 +21,7 @@ def load_scrobbles(input_csv: Path) -> pd.DataFrame:
 
     required_columns = {
         "scrobble_id",
+        "user_id",
         "scrobble_time_utc",
         "artist_id",
     }
@@ -48,14 +49,14 @@ def load_scrobbles(input_csv: Path) -> pd.DataFrame:
 
     df = (
         df.sort_values(
-            ["scrobble_time_utc", "scrobble_id"],
-            ascending=[True, True],
+            ["user_id", "scrobble_time_utc", "scrobble_id"],
+            ascending=[True, True, True],
         )
         .reset_index(drop=True)
     )
 
     df["gap_minutes"] = (
-        df["scrobble_time_utc"]
+        df.groupby("user_id", sort=False)["scrobble_time_utc"]
         .diff()
         .dt.total_seconds()
         .div(60)
@@ -161,14 +162,20 @@ def summarize_threshold(
         | work["gap_minutes"].gt(threshold_minutes)
     )
 
-    work["session_id"] = (
-        work["starts_new_session"]
+    work["session_number"] = (
+        work.groupby("user_id", sort=False)["starts_new_session"]
         .cumsum()
         .astype(int)
     )
 
+    work["session_id"] = (
+        work["user_id"].astype(str)
+        + ":session_"
+        + work["session_number"].astype(str).str.zfill(6)
+    )
+
     sessions = (
-        work.groupby("session_id")
+        work.groupby(["user_id", "session_id"])
         .agg(
             first_scrobble_utc=("scrobble_time_utc", "min"),
             last_scrobble_utc=("scrobble_time_utc", "max"),
@@ -297,6 +304,7 @@ def analyze_thresholds(
     summary = {
         "input_file": str(input_csv),
         "scrobble_count": int(len(df)),
+        "user_count": int(df["user_id"].nunique()),
         "first_scrobble_utc": (
             df["scrobble_time_utc"].min().isoformat()
         ),

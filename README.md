@@ -1,11 +1,11 @@
 # Music Artist Graphs from Last.fm
 
-Reproducible pipeline for building, evaluating, and reusing music-artist graphs derived from a Last.fm listening history.
+Reproducible pipeline for building, evaluating, and reusing music-artist graphs derived from one or more Last.fm listening histories.
 
 ## Core research path
 
 ```text
-Last.fm export
+Last.fm exports
   ↓
 audit and canonicalization
   ↓
@@ -47,11 +47,16 @@ py -m pip install -e ".[community]"
 
 ## Private local data
 
-Place a Last.fm export at:
+Place one or more Last.fm exports in:
 
 ```text
-data/raw/lastfm/recenttracks.csv
+data/raw/lastfm/
 ```
+
+Multi-user exports named like `recenttracks-username-exportid.csv` are
+loaded together. The pipeline infers `user_id` from the file name,
+sessionizes each user independently, and strengthens artist relations
+that are independently observed across multiple users.
 
 Do not commit personal exports, canonical tables, MusicBrainz caches, personal graph files, generated results, or inferred metadata by default.
 
@@ -109,10 +114,9 @@ The default `configs/paper.yaml` reproduces the manuscript path:
 session threshold = 60 minutes
 behavioral relation mode = sequential_k5
 minimum shared sessions = 2
-edge weight = shared_session_cosine
+edge weight = multi_user_shared_session_cosine
 minimum artist scrobbles = 3
 Node2Vec balanced scale = k54
 Node2Vec walk bias = p2.0, q2.0
 downstream representation = Node2Vec
 ```
-

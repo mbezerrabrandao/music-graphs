@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-shared-sessions", type=int, default=2)
     parser.add_argument(
         "--weight-column",
-        default="shared_session_cosine",
+        default="multi_user_shared_session_cosine",
     )
 
     return parser.parse_args()

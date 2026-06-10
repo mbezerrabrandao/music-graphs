@@ -32,6 +32,7 @@ def load_scrobbles(input_csv: Path) -> pd.DataFrame:
 
     required_columns = {
         "scrobble_id",
+        "user_id",
         "scrobble_time_utc",
         "session_id",
         "position_in_session",
@@ -93,6 +94,7 @@ def build_artist_activity(
             ),
             scrobble_count=("scrobble_id", "size"),
             session_count=("session_id", "nunique"),
+            user_count=("user_id", "nunique"),
         )
         .reset_index()
         .sort_values(
@@ -176,6 +178,7 @@ def empty_stats() -> dict[str, Any]:
         "min_gap_minutes": math.inf,
         "max_gap_minutes": 0.0,
         "same_timestamp_pair_count": 0,
+        "user_ids": set(),
     }
 
 
@@ -205,6 +208,10 @@ def build_edge_table(
         grouped,
         start=1,
     ):
+        session_user_ids = set(
+            group["user_id"].astype(str).dropna().unique()
+        )
+
         artist_ids = (
             group["artist_id"]
             .astype(str)
@@ -277,6 +284,7 @@ def build_edge_table(
             )
 
             global_stats["shared_session_count"] += 1
+            global_stats["user_ids"].update(session_user_ids)
 
             global_stats["gap_sum_minutes"] += (
                 local_stats["gap_sum_minutes"]
@@ -326,6 +334,9 @@ def build_edge_table(
                 "proximity_count": proximity_count,
                 "shared_session_count": int(
                     stats["shared_session_count"]
+                ),
+                "shared_user_count": int(
+                    len(stats["user_ids"])
                 ),
                 "mean_gap_minutes": round(
                     float(
@@ -441,6 +452,24 @@ def add_normalized_weights(
         )
     )
 
+    edges["artist_a_user_count"] = (
+        edges["artist_a_id"].map(
+            lambda artist_id: artist_stat(
+                artist_id,
+                "user_count",
+            )
+        )
+    )
+
+    edges["artist_b_user_count"] = (
+        edges["artist_b_id"].map(
+            lambda artist_id: artist_stat(
+                artist_id,
+                "user_count",
+            )
+        )
+    )
+
     edges["proximity_cosine"] = (
         edges["proximity_count"]
         / (
@@ -472,10 +501,16 @@ def add_normalized_weights(
         )
     )
 
+    edges["multi_user_shared_session_cosine"] = (
+        edges["shared_session_cosine"]
+        * edges["shared_user_count"].pow(0.5)
+    )
+
     for column in [
         "proximity_cosine",
         "shared_session_cosine",
         "shared_session_jaccard",
+        "multi_user_shared_session_cosine",
     ]:
         edges[column] = edges[column].round(10)
 
@@ -486,8 +521,10 @@ def add_normalized_weights(
         "artist_b_name",
         "proximity_count",
         "shared_session_count",
+        "shared_user_count",
         "proximity_cosine",
         "shared_session_cosine",
+        "multi_user_shared_session_cosine",
         "shared_session_jaccard",
         "mean_gap_minutes",
         "min_gap_minutes",
@@ -497,17 +534,21 @@ def add_normalized_weights(
         "artist_b_scrobble_count",
         "artist_a_session_count",
         "artist_b_session_count",
+        "artist_a_user_count",
+        "artist_b_user_count",
     ]
 
     return (
         edges[preferred_column_order]
         .sort_values(
             [
+                "multi_user_shared_session_cosine",
                 "shared_session_cosine",
+                "shared_user_count",
                 "shared_session_count",
                 "proximity_count",
             ],
-            ascending=[False, False, False],
+            ascending=[False, False, False, False, False],
         )
         .reset_index(drop=True)
     )
@@ -641,6 +682,20 @@ def summarize_filtered_graph(
                 ].median()
             )
             if not filtered_edges.empty
+            else 0.0,
+            10,
+        ),
+        "median_multi_user_shared_session_cosine": round(
+            float(
+                filtered_edges[
+                    "multi_user_shared_session_cosine"
+                ].median()
+            )
+            if (
+                not filtered_edges.empty
+                and "multi_user_shared_session_cosine"
+                in filtered_edges.columns
+            )
             else 0.0,
             10,
         ),
@@ -796,7 +851,7 @@ def build_listening_graph_edges(
             min_shared_session_thresholds
         ),
         "default_recommended_edge_weight_for_audit": (
-            "shared_session_cosine"
+            "multi_user_shared_session_cosine"
         ),
         "outputs": {
             "edges_raw": str(

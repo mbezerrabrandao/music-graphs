@@ -86,28 +86,89 @@ def validate_columns(df: pd.DataFrame) -> None:
         )
 
 
+def infer_user_id(input_csv: Path) -> str:
+    """
+    Infer a stable user identifier from Last.fm export names.
+
+    Expected multi-user files are named like:
+    recenttracks-username-exportid.csv
+    """
+    match = re.match(
+        r"^recenttracks-(?P<user>.+)-\d+$",
+        input_csv.stem,
+    )
+
+    if match:
+        return normalize_text(match.group("user")) or match.group("user")
+
+    return normalize_text(input_csv.stem) or input_csv.stem
+
+
+def resolve_input_csvs(input_path: Path) -> list[Path]:
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input path does not exist: {input_path}")
+
+    if input_path.is_file():
+        return [input_path]
+
+    csv_paths = sorted(
+        path
+        for path in input_path.glob("*.csv")
+        if path.is_file()
+    )
+
+    if not csv_paths:
+        raise FileNotFoundError(
+            f"No CSV files were found in input directory: {input_path}"
+        )
+
+    return csv_paths
+
+
+def read_raw_exports(input_path: Path) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    frames = []
+    manifests = []
+
+    for csv_path in resolve_input_csvs(input_path):
+        user_id = infer_user_id(csv_path)
+
+        print(f"Reading raw export: {csv_path} [user_id={user_id}]")
+        frame = pd.read_csv(
+            csv_path,
+            dtype="string",
+            keep_default_na=True,
+            low_memory=False,
+        )
+
+        frame.columns = [column.strip() for column in frame.columns]
+        validate_columns(frame)
+
+        frame.insert(0, "source_file", csv_path.name)
+        frame.insert(1, "user_id", user_id)
+        frame.insert(2, "raw_csv_line", range(2, len(frame) + 2))
+
+        frames.append(frame)
+        manifests.append(
+            {
+                "path": str(csv_path),
+                "file_name": csv_path.name,
+                "user_id": user_id,
+                "raw_row_count": int(len(frame)),
+                "file_size_bytes": int(csv_path.stat().st_size),
+            }
+        )
+
+    return pd.concat(frames, ignore_index=True), manifests
+
+
 def build_canonical_tables(input_csv: Path, output_dir: Path) -> None:
-    if not input_csv.exists():
-        raise FileNotFoundError(f"Input file does not exist: {input_csv}")
+    input_path = input_csv
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Reading raw export: {input_csv}")
-    df = pd.read_csv(
-        input_csv,
-        dtype="string",
-        keep_default_na=True,
-        low_memory=False,
-    )
-
-    df.columns = [column.strip() for column in df.columns]
-    validate_columns(df)
+    df, input_manifest = read_raw_exports(input_path)
 
     raw_row_count = len(df)
-
-    # Preserve the original line number for traceability.
-    # The first CSV line contains the header, so data starts at line 2.
-    df.insert(0, "raw_csv_line", range(2, len(df) + 2))
 
     original_columns = EXPECTED_COLUMNS.copy()
 
@@ -117,7 +178,7 @@ def build_canonical_tables(input_csv: Path, output_dir: Path) -> None:
 
     # Remove duplicate records, keeping the first occurrence.
     duplicate_mask = df.duplicated(
-        subset=original_columns,
+        subset=["user_id", *original_columns],
         keep="first",
     )
 
@@ -242,8 +303,8 @@ def build_canonical_tables(input_csv: Path, output_dir: Path) -> None:
 
     # Sort chronologically because later steps will derive listening sessions.
     df = df.sort_values(
-        ["scrobble_time_utc", "raw_csv_line"],
-        ascending=[True, True],
+        ["user_id", "scrobble_time_utc", "raw_csv_line"],
+        ascending=[True, True, True],
     ).reset_index(drop=True)
 
     df.insert(0, "scrobble_id", range(1, len(df) + 1))
@@ -266,6 +327,7 @@ def build_canonical_tables(input_csv: Path, output_dir: Path) -> None:
             ),
             artist_mbid=("artist_mbid_resolved", most_common_non_null),
             scrobble_count=("scrobble_id", "size"),
+            user_count=("user_id", "nunique"),
             first_scrobble_utc=("scrobble_time_utc", "min"),
             last_scrobble_utc=("scrobble_time_utc", "max"),
             active_days=("scrobble_date_utc", "nunique"),
@@ -308,6 +370,9 @@ def build_canonical_tables(input_csv: Path, output_dir: Path) -> None:
 
     summary = {
         "input_file": str(input_csv),
+        "input_type": "directory" if input_path.is_dir() else "file",
+        "input_files": input_manifest,
+        "user_count": int(df["user_id"].nunique()) if not df.empty else 0,
         "raw_row_count": int(raw_row_count),
         "removed_exact_duplicate_count": int(len(duplicate_rows)),
         "rejected_scrobble_count": int(len(rejected_rows)),

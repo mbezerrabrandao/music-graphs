@@ -15,6 +15,7 @@ def load_scrobbles(input_csv: Path) -> pd.DataFrame:
 
     required_columns = {
         "scrobble_id",
+        "user_id",
         "scrobble_time_utc",
         "artist_id",
         "artist",
@@ -47,8 +48,8 @@ def load_scrobbles(input_csv: Path) -> pd.DataFrame:
 
     return (
         df.sort_values(
-            ["scrobble_time_utc", "scrobble_id"],
-            ascending=[True, True],
+            ["user_id", "scrobble_time_utc", "scrobble_id"],
+            ascending=[True, True, True],
         )
         .reset_index(drop=True)
     )
@@ -60,10 +61,12 @@ def assign_sessions(
 ) -> pd.DataFrame:
     work = df.copy()
 
-    work["previous_scrobble_id"] = work["scrobble_id"].shift(1)
+    grouped = work.groupby("user_id", sort=False)
+
+    work["previous_scrobble_id"] = grouped["scrobble_id"].shift(1)
 
     work["gap_from_previous_minutes"] = (
-        work["scrobble_time_utc"]
+        grouped["scrobble_time_utc"]
         .diff()
         .dt.total_seconds()
         .div(60)
@@ -76,14 +79,22 @@ def assign_sessions(
         )
     )
 
+    work["user_session_number"] = (
+        work.groupby("user_id", sort=False)["starts_new_session"]
+        .cumsum()
+        .astype(int)
+    )
+
     work["session_number"] = (
         work["starts_new_session"]
         .cumsum()
         .astype(int)
     )
 
-    work["session_id"] = work["session_number"].map(
-        lambda number: f"session_{number:06d}"
+    work["session_id"] = (
+        work["user_id"].astype(str)
+        + ":session_"
+        + work["user_session_number"].astype(str).str.zfill(6)
     )
 
     work["position_in_session"] = (
@@ -100,7 +111,7 @@ def aggregate_sessions(
     long_session_minutes: int,
 ) -> pd.DataFrame:
     sessions = (
-        df.groupby("session_id")
+        df.groupby(["user_id", "session_id"])
         .agg(
             first_scrobble_utc=("scrobble_time_utc", "min"),
             last_scrobble_utc=("scrobble_time_utc", "max"),
@@ -229,6 +240,9 @@ def build_sessions(
         ),
         "scrobble_count": int(
             len(scrobbles_with_sessions)
+        ),
+        "user_count": int(
+            scrobbles_with_sessions["user_id"].nunique()
         ),
         "session_count": int(len(sessions)),
         "singleton_session_count": int(

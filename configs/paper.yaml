@@ -5,7 +5,7 @@
   selection_report: results/selection_report.md
 
 paths:
-  lastfm_export_csv: data/raw/lastfm/recenttracks.csv
+  lastfm_export_dir: data/raw/lastfm
 
 optional:
   semantic_reference: false
@@ -19,7 +19,7 @@ parameters:
     relation_mode: sequential
     window_size_scrobbles: 5
     minimum_shared_sessions: 2
-    edge_weight: shared_session_cosine
+    edge_weight: multi_user_shared_session_cosine
     minimum_artist_scrobbles: 3
     use_largest_connected_component: true
   modularity:
@@ -58,11 +58,11 @@ stages:
     command:
       - "{python}"
       - src/music_graphs/data/inspect_lastfm_export.py
-      - data/raw/lastfm/recenttracks.csv
+      - data/raw/lastfm
       - --output-dir
       - results/data_audit
     inputs:
-      - data/raw/lastfm/recenttracks.csv
+      - data/raw/lastfm
     outputs:
       - results/data_audit
 
@@ -71,11 +71,11 @@ stages:
     command:
       - "{python}"
       - src/music_graphs/data/build_canonical_tables.py
-      - data/raw/lastfm/recenttracks.csv
+      - data/raw/lastfm
       - --output-dir
       - data/interim
     inputs:
-      - data/raw/lastfm/recenttracks.csv
+      - data/raw/lastfm
     outputs:
       - data/interim/canonical_scrobbles.csv
       - data/interim/canonical_artists.csv
@@ -170,7 +170,7 @@ stages:
       - --min-shared-sessions
       - "2"
       - --weight-column
-      - shared_session_cosine
+      - multi_user_shared_session_cosine
     inputs:
       - data/interim/sessions/threshold_60m/scrobbles_with_sessions.csv
     outputs:
@@ -526,8 +526,8 @@ decisions:
 
   - decision: behavioral_edge_weight
     status: frozen
-    selected: shared_session_cosine
-    selection_rule: Normalize repeated shared-session evidence to reduce domination by highly active artists.
+    selected: multi_user_shared_session_cosine
+    selection_rule: Normalize repeated shared-session evidence while strengthening relations independently observed across multiple users.
     uses_external_genres: false
 
   - decision: minimum_artist_scrobbles

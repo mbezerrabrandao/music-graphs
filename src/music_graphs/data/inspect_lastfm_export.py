@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -33,10 +35,46 @@ def clean_text_column(series: pd.Series) -> pd.Series:
     return series.astype("string").str.strip().replace("", pd.NA)
 
 
-def inspect_export(input_csv: Path, output_dir: Path) -> None:
-    if not input_csv.exists():
-        raise FileNotFoundError(f"Input file does not exist: {input_csv}")
+def normalize_text(value: str) -> str:
+    text = unicodedata.normalize("NFKC", value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.casefold()
 
+
+def infer_user_id(input_csv: Path) -> str:
+    match = re.match(
+        r"^recenttracks-(?P<user>.+)-\d+$",
+        input_csv.stem,
+    )
+
+    if match:
+        return normalize_text(match.group("user"))
+
+    return normalize_text(input_csv.stem)
+
+
+def resolve_input_csvs(input_path: Path) -> list[Path]:
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input path does not exist: {input_path}")
+
+    if input_path.is_file():
+        return [input_path]
+
+    csv_paths = sorted(
+        path
+        for path in input_path.glob("*.csv")
+        if path.is_file()
+    )
+
+    if not csv_paths:
+        raise FileNotFoundError(
+            f"No CSV files were found in input directory: {input_path}"
+        )
+
+    return csv_paths
+
+
+def inspect_single_export(input_csv: Path, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(input_csv, low_memory=False)
@@ -122,6 +160,7 @@ def inspect_export(input_csv: Path, output_dir: Path) -> None:
     summary = {
         "input_file": str(input_csv),
         "file_name": input_csv.name,
+        "user_id": infer_user_id(input_csv),
         "file_size_bytes": input_csv.stat().st_size,
         "sha256": sha256sum(input_csv),
         "row_count": int(len(df)),
@@ -152,6 +191,44 @@ def inspect_export(input_csv: Path, output_dir: Path) -> None:
             )
 
     with (output_dir / "lastfm_export_summary.json").open("w", encoding="utf-8") as file:
+        json.dump(summary, file, indent=2, ensure_ascii=False)
+
+    return summary
+
+
+def inspect_export(input_csv: Path, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    summaries = []
+
+    for csv_path in resolve_input_csvs(input_csv):
+        summaries.append(
+            inspect_single_export(
+                input_csv=csv_path,
+                output_dir=output_dir / csv_path.stem,
+            )
+        )
+
+    summary = {
+        "input_path": str(input_csv),
+        "input_type": "directory" if input_csv.is_dir() else "file",
+        "file_count": int(len(summaries)),
+        "user_count": int(
+            len({item["user_id"] for item in summaries})
+        ),
+        "row_count": int(
+            sum(item["row_count"] for item in summaries)
+        ),
+        "unique_artist_names_sum": int(
+            sum(item.get("unique_artist_names", 0) for item in summaries)
+        ),
+        "files": summaries,
+    }
+
+    with (output_dir / "lastfm_exports_summary.json").open(
+        "w",
+        encoding="utf-8",
+    ) as file:
         json.dump(summary, file, indent=2, ensure_ascii=False)
 
     print(json.dumps(summary, indent=2, ensure_ascii=False))

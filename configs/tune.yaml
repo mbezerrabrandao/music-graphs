@@ -5,7 +5,7 @@ project:
   selection_report: results/selection_report_tune.md
 
 paths:
-  lastfm_export_csv: data/raw/lastfm/recenttracks.csv
+  lastfm_export_dir: data/raw/lastfm
 
 optional:
   semantic_reference: false

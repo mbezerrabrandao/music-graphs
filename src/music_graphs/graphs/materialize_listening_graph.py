@@ -163,6 +163,11 @@ def load_nodes(nodes_csv: Path) -> pd.DataFrame:
     for column in [
         "scrobble_count",
         "session_count",
+        *(
+            ["user_count"]
+            if "user_count" in nodes.columns
+            else []
+        ),
     ]:
         nodes[column] = pd.to_numeric(
             nodes[column],
@@ -267,6 +272,10 @@ def build_graph(
                 row.session_count,
                 "session_count",
             ),
+            user_count=required_int(
+                getattr(row, "user_count", 1),
+                "user_count",
+            ),
         )
 
     for row in edges.to_dict(orient="records"):
@@ -288,6 +297,10 @@ def build_graph(
             shared_session_count=required_int(
                 row["shared_session_count"],
                 "shared_session_count",
+            ),
+            shared_user_count=required_int(
+                row.get("shared_user_count", 1),
+                "shared_user_count",
             ),
             proximity_count=required_int(
                 row["proximity_count"],
@@ -771,10 +784,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--weight-column",
         type=str,
-        default="shared_session_cosine",
+        default="multi_user_shared_session_cosine",
         help=(
             "Behavioral edge-weight column. "
-            "Default: shared_session_cosine."
+            "Default: multi_user_shared_session_cosine."
         ),
     )
 

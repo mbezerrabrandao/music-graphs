@@ -18,6 +18,21 @@ def hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def fingerprint_directory(path: Path) -> list[dict[str, Any]]:
+    records = []
+
+    for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        records.append(
+            {
+                "path": str(child.relative_to(path)),
+                "sha256": hash_file(child),
+                "size_bytes": child.stat().st_size,
+            }
+        )
+
+    return records
+
+
 def fingerprint_stage(
     *,
     config: dict[str, Any],
@@ -36,6 +51,9 @@ def fingerprint_stage(
         if path.exists() and path.is_file():
             record["sha256"] = hash_file(path)
             record["size_bytes"] = path.stat().st_size
+
+        if path.exists() and path.is_dir():
+            record["files"] = fingerprint_directory(path)
 
         input_records.append(record)
 

@@ -1,0 +1,982 @@
+project:
+  name: music-artist-graphs
+  mode: tune
+  state_dir: results/.pipeline_state_local_large
+  selection_report: results/selection_report_local_large.md
+
+paths:
+  lastfm_export_dir: data/raw/lastfm
+
+optional:
+  semantic_reference: false
+  gae: true
+  acoustic_reference: true
+  ablations: false
+
+parameters:
+  sessions:
+    threshold_minutes: 60
+  behavioral_graph:
+    relation_mode: sequential
+    window_size_scrobbles: 5
+    minimum_shared_sessions: 2
+    edge_weight: multi_user_decayed_shared_session_cosine
+    minimum_artist_scrobbles: 3
+    use_largest_connected_component: true
+  modularity:
+    resolutions: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.25, 2.5, 3.0, 4.0]
+    balanced_resolution: 2.25
+    granular_resolution: 4.0
+    seeds: [42, 43, 44, 45, 46]
+  node2vec:
+    dimensions: 64
+    walk_length: 40
+    walks_per_node: 10
+    context_window: 5
+    epochs: 30
+    p_values: [0.5, 1.0, 2.0]
+    q_values: [0.5, 1.0, 2.0]
+    selected_p: 2.0
+    selected_q: 1.0
+    balanced_k: 54
+    seeds: [42, 43, 44, 45, 46]
+  smooth_controls:
+    modes: [raw, smooth1, smooth2]
+    balanced_k: 54
+    seeds: [42, 43, 44, 45, 46]
+  genre_inference:
+    families: [raw, smooth1, smooth2, node2vec, gae, acoustic_raw, acoustic_smooth1, acoustic_smooth2, acoustic_node2vec, acoustic_gae]
+    classifier: logistic_regression
+    class_weight: balanced
+    regularization_c_grid: [0.01, 0.1, 1.0, 10.0, 100.0]
+    minimum_genre_support: 5
+    cv_folds: 5
+    cv_seeds: [42, 43, 44, 45, 46]
+    primary_metric: macro_f1
+
+stages:
+  audit_export:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/inspect_lastfm_export.py
+      - data/raw/lastfm
+      - --output-dir
+      - results/data_audit
+    inputs:
+      - data/raw/lastfm
+    outputs:
+      - results/data_audit
+
+  canonicalize:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/build_canonical_tables.py
+      - data/raw/lastfm
+      - --output-dir
+      - data/interim
+    inputs:
+      - data/raw/lastfm
+    outputs:
+      - data/interim/canonical_scrobbles.csv
+      - data/interim/canonical_artists.csv
+
+  session_audit:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/analyze_session_thresholds.py
+      - data/interim/canonical_scrobbles.csv
+      - --output-dir
+      - results/session_audit
+      - --thresholds
+      - "15"
+      - "30"
+      - "45"
+      - "60"
+      - "90"
+      - "120"
+    inputs:
+      - data/interim/canonical_scrobbles.csv
+    outputs:
+      - results/session_audit/inter_scrobble_gap_quantiles.csv
+      - results/session_audit/session_threshold_sensitivity.csv
+
+  select_session_threshold:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/select_session_threshold.py
+      - results/session_audit/inter_scrobble_gap_quantiles.csv
+      - --output-dir
+      - results/selection_evidence
+      - --candidates
+      - "15"
+      - "30"
+      - "45"
+      - "60"
+      - "90"
+      - "120"
+      - --expected-selected
+      - "45"
+      - --allow-new-selection
+    inputs:
+      - results/session_audit/inter_scrobble_gap_quantiles.csv
+    outputs:
+      - results/selection_evidence/session_threshold_selection.json
+      - results/selection_evidence/session_threshold_selection.md
+
+  build_sessions:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/build_listening_sessions.py
+      - data/interim/canonical_scrobbles.csv
+      - --output-root
+      - data/interim/sessions
+      - --threshold-minutes
+      - "60"
+      - --long-session-minutes
+      - "480"
+    inputs:
+      - data/interim/canonical_scrobbles.csv
+      - results/selection_evidence/session_threshold_selection.json
+    outputs:
+      - data/interim/sessions/threshold_60m/scrobbles_with_sessions.csv
+      - data/interim/sessions/threshold_60m/listening_sessions.csv
+
+  build_behavioral_graph:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/graphs/run_behavioral_graph_pipeline.py
+      - data/interim/sessions/threshold_60m/scrobbles_with_sessions.csv
+      - --edge-output-root
+      - data/interim/listening_graphs
+      - --processed-output-dir
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3
+      - --mode
+      - sequential
+      - --window-size
+      - "5"
+      - --k-sensitivity-values
+      - "1"
+      - "2"
+      - "3"
+      - "5"
+      - "10"
+      - --min-shared-session-thresholds
+      - "1"
+      - "2"
+      - "3"
+      - "5"
+      - "10"
+      - --progress-every
+      - "1000"
+      - --min-scrobbles
+      - "3"
+      - --min-shared-sessions
+      - "2"
+      - --weight-column
+      - multi_user_decayed_shared_session_cosine
+    inputs:
+      - data/interim/sessions/threshold_60m/scrobbles_with_sessions.csv
+    outputs:
+      - data/interim/listening_graphs/sequential_k5/min_shared_sessions_sensitivity.csv
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/nodes_largest_component.csv
+
+  summarize_graph_support:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/summarize_graph_support.py
+      - data/interim/listening_graphs/sequential_k5/min_shared_sessions_sensitivity.csv
+      - --output-dir
+      - results/selection_evidence
+      - --selected-support
+      - "2"
+    inputs:
+      - data/interim/listening_graphs/sequential_k5/min_shared_sessions_sensitivity.csv
+    outputs:
+      - results/selection_evidence/graph_support_selection.json
+      - results/selection_evidence/graph_support_selection.md
+
+  fetch_musicbrainz:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/run_musicbrainz_fetch.py
+      - data/interim/canonical_artists.csv
+      - --cache-dir
+      - data/raw/musicbrainz/artist_genres
+      - --output-dir
+      - data/interim/musicbrainz
+      - --delay-seconds
+      - "1.1"
+      - --max-retries
+      - "4"
+      - --save-progress-every
+      - "25"
+    inputs:
+      - data/interim/canonical_artists.csv
+    outputs:
+      - data/interim/musicbrainz/artist_genre_fetch_manifest.csv
+
+  prepare_genre_labels:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/data/build_musicbrainz_genre_tables.py
+      - data/interim/canonical_artists.csv
+      - --cache-dir
+      - data/raw/musicbrainz/artist_genres
+      - --output-dir
+      - data/interim/musicbrainz
+      - --graph-nodes-csv
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/nodes_largest_component.csv
+    inputs:
+      - data/interim/canonical_artists.csv
+      - data/interim/musicbrainz/artist_genre_fetch_manifest.csv
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/nodes_largest_component.csv
+    outputs:
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - data/interim/musicbrainz/artist_genres_long.csv
+
+  build_acoustic_graph:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/graphs/build_acoustic_artist_graph.py
+      - data/interim/canonical_scrobbles.csv
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --recordings-csv
+      - data/interim/acoustic/top_artist_recordings_top10.csv
+      - --cache-dir
+      - data/raw/acousticbrainz/low_level
+      - --fetch-manifest-csv
+      - data/interim/acoustic/acousticbrainz_fetch_manifest.csv
+      - --artist-features-csv
+      - data/interim/acoustic/artist_acoustic_features_top10.csv
+      - --output-dir
+      - data/processed/acoustic_graphs/top10_knn20_min0_40
+      - --top-n
+      - "10"
+      - --min-track-scrobbles
+      - "2"
+      - --min-recordings-per-artist
+      - "1"
+      - --nearest-neighbors
+      - "20"
+      - --min-similarity
+      - "0.40"
+      - --sensitivity-thresholds
+      - "0.30"
+      - "0.35"
+      - "0.40"
+      - "0.45"
+      - "0.50"
+      - "0.60"
+      - --sensitivity-neighbors
+      - "10"
+      - "20"
+      - "30"
+      - "50"
+      - --batch-size
+      - "20"
+      - --sleep-seconds
+      - "1.0"
+    inputs:
+      - data/interim/canonical_scrobbles.csv
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - data/interim/acoustic/top_artist_recordings_top10.csv
+      - data/interim/acoustic/artist_acoustic_features_top10.csv
+      - data/interim/acoustic/acousticbrainz_fetch_manifest.csv
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_acoustic_summary.json
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_acoustic_threshold_sensitivity.csv
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_acoustic_knn_threshold_sensitivity.csv
+
+  run_acoustic_modularity_baselines:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_behavioral_community_baselines.py
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/acoustic_baselines_balanced_grid
+      - --resolutions
+      - "0.5"
+      - "0.75"
+      - "1.0"
+      - "1.25"
+      - "1.5"
+      - "2.0"
+      - "2.25"
+      - "2.5"
+      - "3.0"
+      - "4.0"
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+    inputs:
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/acoustic_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - results/acoustic_baselines_balanced_grid/partitions
+
+  run_acoustic_node2vec:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_node2vec_baseline.py
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/acoustic_node2vec_final_candidates
+      - --p-values
+      - "0.5"
+      - "1.0"
+      - "2.0"
+      - --q-values
+      - "0.5"
+      - "1.0"
+      - "2.0"
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --k-values
+      - "25"
+      - "40"
+      - "54"
+      - "75"
+      - "100"
+      - "150"
+      - --dimensions
+      - "64"
+      - --walk-length
+      - "40"
+      - --walks-per-node
+      - "10"
+      - --context-window
+      - "5"
+      - --epochs
+      - "30"
+    inputs:
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/acoustic_node2vec_final_candidates/node2vec_clustering_runs.csv
+      - results/acoustic_node2vec_final_candidates/embeddings
+      - results/acoustic_node2vec_final_candidates/partitions
+
+  select_acoustic_node2vec:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/select_node2vec_balanced.py
+      - results/acoustic_node2vec_final_candidates/node2vec_clustering_runs.csv
+      - --output-dir
+      - results/selection_evidence/acoustic_node2vec
+      - --balanced-k
+      - "54"
+      - --expected-p
+      - "2.0"
+      - --expected-q
+      - "1.0"
+      - --allow-new-selection
+      - --expected-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+    inputs:
+      - results/acoustic_node2vec_final_candidates/node2vec_clustering_runs.csv
+    outputs:
+      - results/selection_evidence/acoustic_node2vec/node2vec_balanced_pq_summary.csv
+      - results/selection_evidence/acoustic_node2vec/node2vec_cluster_k_sensitivity.csv
+      - results/selection_evidence/acoustic_node2vec/node2vec_cluster_k_sensitivity.md
+      - results/selection_evidence/acoustic_node2vec/node2vec_walk_bias_selection.json
+      - results/selection_evidence/acoustic_node2vec/node2vec_walk_bias_selection.md
+
+  run_acoustic_smooth2_control:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_behavioral_feature_controls.py
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/acoustic_feature_controls
+      - --modes
+      - raw
+      - smooth1
+      - smooth2
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --k-values
+      - "25"
+      - "40"
+      - "54"
+      - "75"
+      - "100"
+      - "150"
+    inputs:
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/acoustic_feature_controls/behavioral_feature_control_runs.csv
+      - results/acoustic_feature_controls/embeddings
+      - results/acoustic_feature_controls/partitions
+
+  run_acoustic_gae:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_graph_autoencoder.py
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/acoustic_graph_autoencoder_final_candidates
+      - --summary-output-dir
+      - results/acoustic_graph_autoencoder_final_candidates_summary
+      - --hidden-dims
+      - "128"
+      - --latent-dims
+      - "16"
+      - "32"
+      - --dropout-values
+      - "0.1"
+      - "0.3"
+      - --learning-rates
+      - "0.005"
+      - "0.001"
+      - --weight-decays
+      - "0.0001"
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --k-values
+      - "25"
+      - "40"
+      - "54"
+      - "75"
+      - "100"
+      - "150"
+      - --epochs
+      - "100"
+      - --validation-fraction
+      - "0.1"
+    inputs:
+      - data/processed/acoustic_graphs/top10_knn20_min0_40/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/acoustic_graph_autoencoder_final_candidates_summary/graph_autoencoder_combined_runs.csv
+      - results/acoustic_graph_autoencoder_final_candidates_summary/graph_autoencoder_hyperparameter_summary.csv
+      - results/acoustic_graph_autoencoder_final_candidates_summary/graph_autoencoder_k_sensitivity.csv
+      - results/acoustic_graph_autoencoder_final_candidates/selected/embeddings
+
+  run_modularity_baselines:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_behavioral_community_baselines.py
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/behavioral_baselines_balanced_grid
+      - --resolutions
+      - "0.5"
+      - "0.75"
+      - "1.0"
+      - "1.25"
+      - "1.5"
+      - "2.0"
+      - "2.25"
+      - "2.5"
+      - "3.0"
+      - "4.0"
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+    inputs:
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - results/behavioral_baselines_balanced_grid/partitions
+
+  summarize_modularity_grid:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/summarize_modularity_grid.py
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - --output-dir
+      - results/selection_evidence
+      - --balanced-resolution
+      - "2.25"
+    inputs:
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+    outputs:
+      - results/selection_evidence/modularity_resolution_grid_summary.csv
+      - results/selection_evidence/modularity_resolution_selection.md
+
+  run_node2vec:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_node2vec_baseline.py
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/node2vec_final_candidates
+      - --p-values
+      - "0.5"
+      - "1.0"
+      - "2.0"
+      - --q-values
+      - "0.5"
+      - "1.0"
+      - "2.0"
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --k-values
+      - "25"
+      - "40"
+      - "54"
+      - "75"
+      - "100"
+      - "150"
+      - --dimensions
+      - "64"
+      - --walk-length
+      - "40"
+      - --walks-per-node
+      - "10"
+      - --context-window
+      - "5"
+      - --epochs
+      - "30"
+    inputs:
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - results/node2vec_final_candidates/embeddings
+      - results/node2vec_final_candidates/partitions
+
+  select_node2vec:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/select_node2vec_balanced.py
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - --output-dir
+      - results/selection_evidence
+      - --balanced-k
+      - "54"
+      - --expected-p
+      - "2.0"
+      - --expected-q
+      - "1.0"
+      - --allow-new-selection
+      - --expected-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+    inputs:
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+    outputs:
+      - results/selection_evidence/node2vec_balanced_pq_summary.csv
+      - results/selection_evidence/node2vec_cluster_k_sensitivity.csv
+      - results/selection_evidence/node2vec_cluster_k_sensitivity.md
+      - results/selection_evidence/node2vec_walk_bias_selection.json
+      - results/selection_evidence/node2vec_walk_bias_selection.md
+
+  run_smooth2_control:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_behavioral_feature_controls.py
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/behavioral_feature_controls
+      - --modes
+      - raw
+      - smooth1
+      - smooth2
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --k-values
+      - "25"
+      - "40"
+      - "54"
+      - "75"
+      - "100"
+      - "150"
+    inputs:
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/behavioral_feature_controls/behavioral_feature_control_runs.csv
+      - results/behavioral_feature_controls/embeddings
+      - results/behavioral_feature_controls/partitions
+
+  uniform_evaluation:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/evaluation/run_core_uniform_evaluation.py
+      - --labels-csv
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/uniform_balanced_evaluation
+      - --supports
+      - "1"
+      - "2"
+      - "3"
+      - "5"
+      - --expected-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --behavioral-baseline-runs-csv
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - --behavioral-baseline-partition-root
+      - results/behavioral_baselines_balanced_grid
+      - --node2vec-runs-csv
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - --node2vec-partition-root
+      - results/node2vec_final_candidates
+      - --smooth2-runs-csv
+      - results/behavioral_feature_controls/behavioral_feature_control_runs.csv
+      - --smooth2-partition-root
+      - results/behavioral_feature_controls
+      - --gae-combined-runs-csv
+      - results/graph_autoencoder_final_candidates_no_leakage_summary/graph_autoencoder_combined_runs.csv
+      - --gae-partition-root
+      - results/graph_autoencoder_final_candidates_no_leakage
+      - --acoustic-baseline-runs-csv
+      - results/acoustic_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - --acoustic-baseline-partition-root
+      - results/acoustic_baselines_balanced_grid
+      - --acoustic-node2vec-runs-csv
+      - results/acoustic_node2vec_final_candidates/node2vec_clustering_runs.csv
+      - --acoustic-node2vec-partition-root
+      - results/acoustic_node2vec_final_candidates
+      - --acoustic-smooth2-runs-csv
+      - results/acoustic_feature_controls/behavioral_feature_control_runs.csv
+      - --acoustic-smooth2-partition-root
+      - results/acoustic_feature_controls
+      - --acoustic-gae-combined-runs-csv
+      - results/acoustic_graph_autoencoder_final_candidates_summary/graph_autoencoder_combined_runs.csv
+      - --acoustic-gae-partition-root
+      - results/acoustic_graph_autoencoder_final_candidates
+    inputs:
+      - results/behavioral_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - results/behavioral_feature_controls/behavioral_feature_control_runs.csv
+      - results/selection_evidence/node2vec_walk_bias_selection.json
+      - results/graph_autoencoder_final_candidates_no_leakage_summary/graph_autoencoder_combined_runs.csv
+      - results/graph_autoencoder_final_candidates_no_leakage
+      - results/acoustic_baselines_balanced_grid/behavioral_baseline_runs.csv
+      - results/acoustic_baselines_balanced_grid/partitions
+      - results/acoustic_node2vec_final_candidates/node2vec_clustering_runs.csv
+      - results/acoustic_node2vec_final_candidates/partitions
+      - results/acoustic_feature_controls/behavioral_feature_control_runs.csv
+      - results/acoustic_feature_controls/partitions
+      - results/acoustic_graph_autoencoder_final_candidates_summary/graph_autoencoder_combined_runs.csv
+      - results/acoustic_graph_autoencoder_final_candidates
+    outputs:
+      - results/uniform_balanced_evaluation/primary_balanced_comparison.csv
+      - results/uniform_balanced_evaluation/uniform_partition_stability_summary.csv
+
+  genre_inference:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_genre_inference_benchmark.py
+      - --labels-csv
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --behavioral-control-embeddings-dir
+      - results/behavioral_feature_controls/embeddings
+      - --node2vec-embeddings-dir
+      - results/node2vec_final_candidates/embeddings
+      - --gae-embeddings-dir
+      - results/graph_autoencoder_final_candidates_no_leakage/selected/embeddings
+      - --acoustic-control-embeddings-dir
+      - results/acoustic_feature_controls/embeddings
+      - --acoustic-node2vec-embeddings-dir
+      - results/acoustic_node2vec_final_candidates/embeddings
+      - --node2vec-runs-csv
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - --acoustic-node2vec-runs-csv
+      - results/acoustic_node2vec_final_candidates/node2vec_clustering_runs.csv
+      - --acoustic-gae-embeddings-dir
+      - results/acoustic_graph_autoencoder_final_candidates/selected/embeddings
+      - --output-dir
+      - results/genre_inference_benchmark
+      - --families
+      - raw
+      - smooth1
+      - smooth2
+      - node2vec
+      - gae
+      - acoustic_raw
+      - acoustic_smooth1
+      - acoustic_smooth2
+      - acoustic_node2vec
+      - acoustic_gae
+      - --expected-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --cv-seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --cv-folds
+      - "5"
+      - --minimum-genre-support
+      - "5"
+      - --regularization-c-grid
+      - "0.01"
+      - "0.1"
+      - "1.0"
+      - "10.0"
+      - "100.0"
+      - --top-k
+      - "3"
+    inputs:
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - results/behavioral_feature_controls/embeddings
+      - results/node2vec_final_candidates/node2vec_clustering_runs.csv
+      - results/node2vec_final_candidates/embeddings
+      - results/graph_autoencoder_final_candidates_no_leakage/selected/embeddings
+      - results/acoustic_feature_controls/embeddings
+      - results/acoustic_node2vec_final_candidates/node2vec_clustering_runs.csv
+      - results/acoustic_node2vec_final_candidates/embeddings
+      - results/acoustic_graph_autoencoder_final_candidates/selected/embeddings
+    outputs:
+      - results/genre_inference_benchmark/classification_cv_summary.csv
+      - results/genre_inference_benchmark/predictions_unknown_selected_family.csv
+
+  selection_report:
+    enabled: true
+    command:
+      - "{python}"
+      - scripts/write_selection_report.py
+      - --config
+      - configs/local_large.yaml
+    inputs:
+      - results/selection_evidence/session_threshold_selection.json
+      - results/selection_evidence/graph_support_selection.json
+      - results/selection_evidence/modularity_resolution_selection.json
+      - results/selection_evidence/node2vec_walk_bias_selection.json
+      - results/genre_inference_benchmark/classification_cv_summary.csv
+    outputs:
+      - results/selection_report_local_large.md
+
+  semantic_reference:
+    enabled: true
+    command: []
+    inputs: []
+    outputs: []
+
+  graph_autoencoder:
+    enabled: true
+    command:
+      - "{python}"
+      - src/music_graphs/methods/run_graph_autoencoder.py
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+      - --output-dir
+      - results/graph_autoencoder_final_candidates_no_leakage
+      - --summary-output-dir
+      - results/graph_autoencoder_final_candidates_no_leakage_summary
+      - --hidden-dims
+      - "128"
+      - --latent-dims
+      - "16"
+      - "32"
+      - --dropout-values
+      - "0.1"
+      - "0.3"
+      - --learning-rates
+      - "0.005"
+      - "0.001"
+      - --weight-decays
+      - "0.0001"
+      - --seeds
+      - "42"
+      - "43"
+      - "44"
+      - "45"
+      - "46"
+      - --k-values
+      - "25"
+      - "40"
+      - "54"
+      - "75"
+      - "100"
+      - "150"
+      - --epochs
+      - "100"
+      - --validation-fraction
+      - "0.1"
+    inputs:
+      - data/processed/listening_graphs/sequential_k5_decay_support2_min3/graph_largest_component.graphml
+      - data/interim/musicbrainz/largest_component_genre_coverage.csv
+    outputs:
+      - results/graph_autoencoder_final_candidates_no_leakage_summary/graph_autoencoder_combined_runs.csv
+      - results/graph_autoencoder_final_candidates_no_leakage_summary/graph_autoencoder_hyperparameter_summary.csv
+      - results/graph_autoencoder_final_candidates_no_leakage_summary/graph_autoencoder_k_sensitivity.csv
+      - results/graph_autoencoder_final_candidates_no_leakage_summary/graph_autoencoder_selected_hyperparameters.json
+      - results/graph_autoencoder_final_candidates_no_leakage/selected/embeddings
+
+  ablations:
+    enabled: true
+    command: []
+    inputs: []
+    outputs: []
+
+decisions:
+  - decision: session_threshold_minutes
+    status: computed_and_validated
+    candidates: [15, 30, 45, 60, 90, 120]
+    selected: 60
+    selection_rule: Closest tested threshold to the p95 inter-scrobble gap.
+    uses_external_genres: false
+
+  - decision: behavioral_relation_mode
+    status: frozen_after_methodological_comparison
+    candidates: [sequential_k5, temporal_30m]
+    selected: sequential_k5
+    selection_rule: Prefer a bounded local context that limits long-session effects while preserving a sufficiently large connected graph.
+    uses_external_genres: false
+
+  - decision: minimum_shared_sessions
+    status: reported_and_validated
+    candidates: [1, 2, 3, 5, 10]
+    selected: 2
+    selection_rule: Require repeated co-occurrence while retaining a broad active graph and a dominant connected component.
+    uses_external_genres: false
+
+  - decision: behavioral_edge_weight
+    status: frozen
+    selected: multi_user_decayed_shared_session_cosine
+    selection_rule: Normalize repeated shared-session evidence while strengthening relations independently observed across multiple users.
+    uses_external_genres: false
+
+  - decision: minimum_artist_scrobbles
+    status: frozen
+    selected: 3
+    selection_rule: Exclude extremely sparse artist activity while retaining the broad behavioral graph.
+    uses_external_genres: false
+
+  - decision: modularity_balanced_resolution
+    status: frozen_after_exploratory_analysis
+    selected: 2.25
+    selection_rule: Report the exploratory structural-versus-semantic trade-off transparently. Do not automatically optimize resolution against genres for a new user history.
+    uses_external_genres: true
+
+  - decision: node2vec_balanced_k
+    status: balanced_scale_with_sensitivity
+    candidates: [25, 40, 54, 75, 100, 150]
+    selected: 54
+    selection_rule: Keep k=54 as the balanced downstream scale while reporting cluster-count sensitivity across the tested candidate grid.
+    uses_external_genres: false
+
+  - decision: node2vec_walk_bias
+    status: computed_and_validated
+    candidates:
+      p: [0.5, 1.0, 2.0]
+      q: [0.5, 1.0, 2.0]
+      seeds: [42, 43, 44, 45, 46]
+    selected: {p: 2.0, q: 1.0}
+    selection_rule: Maximum mean silhouette across five seeds within the balanced k=54 scale.
+    uses_external_genres: false
+
+  - decision: acoustic_node2vec_walk_bias
+    status: computed_and_validated
+    candidates:
+      p: [0.5, 1.0, 2.0]
+      q: [0.5, 1.0, 2.0]
+      seeds: [42, 43, 44, 45, 46]
+    selected: {p: 2.0, q: 2.0}
+    selection_rule: Maximum mean silhouette across five seeds within the balanced k=54 scale, independently on the acoustic graph.
+    uses_external_genres: false
+
+  - decision: acoustic_graph_reference
+    status: exploratory_reference_graph
+    candidates:
+      top_n_recordings: [5, 10]
+      nearest_neighbors: [10, 20, 30, 50]
+      min_similarity: [0.30, 0.35, 0.40, 0.45, 0.50, 0.60]
+    selected:
+      top_n_recordings: 10
+      nearest_neighbors: 20
+      min_similarity: 0.40
+    selection_rule: Use top listened recordings with cached low-level AcousticBrainz coverage, report kNN-by-threshold sensitivity, and retain kNN=20 with min_similarity=0.40 as the acoustic reference graph because it preserves top-artist connectivity while avoiding the most permissive edges.
+    uses_external_genres: false
+
+  - decision: graph_autoencoder_hyperparameters
+    status: computed_with_k_sensitivity
+    candidates:
+      hidden_dim: [128]
+      latent_dim: [16, 32]
+      dropout: [0.1, 0.3]
+      learning_rate: [0.005, 0.001]
+      weight_decay: [0.0001]
+      k: [25, 40, 54, 75, 100, 150]
+      seeds: [42, 43, 44, 45, 46]
+    selected: computed_from_validation_auc_and_reported_k_grid
+    selection_rule: Select the embedding hyperparameters by held-out edge reconstruction validation AUC, then report K-Means cluster-count sensitivity on the selected embeddings.
+    uses_external_genres: false
+
+  - decision: downstream_genre_inference_representation
+    status: computed_after_unsupervised_freeze
+    candidates: [raw, smooth1, smooth2, node2vec, gae, acoustic_raw, acoustic_smooth1, acoustic_smooth2, acoustic_node2vec, acoustic_gae]
+    selected: computed_from_current_run
+    selection_rule: Highest mean macro-F1 under repeated stratified cross-validation after freezing the unsupervised behavioral and acoustic representation grids.
+    uses_external_genres: true
+

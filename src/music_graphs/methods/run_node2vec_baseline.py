@@ -1341,7 +1341,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--epochs",
         type=int,
-        default=10,
+        default=30,
     )
 
     return parser.parse_args()

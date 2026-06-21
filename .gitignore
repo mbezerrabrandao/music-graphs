@@ -19,23 +19,30 @@ legacy_python_inventory.txt
 legacy_result_inventory.txt
 legacy_cli_help.txt
 
-# Private data and caches
-data/raw/
-data/interim/
-data/processed/
-data/private/
-data/*.csv
-data/**/*.csv
-data/**/*.json
-!data/sample/**
+# Public release policy:
+# keep source code, the final paper config, the small sample dataset,
+# the sensitivity/freezing notebook, and completed reviewer CSVs in root.
+
+# Configs
+configs/**
+!configs/
+!configs/local_large.yaml
+
+# Private data and generated data products
+data/**
+!data/
 !data/README.md
-!data/raw/lastfm/recenttracks.csv
+!data/sample/
+!data/sample/**
 
-notebooks/**
-docs/**
-
-# Generated results and resumable state
-notebooks/**
+# Generated results, figures, tables, and resumable state
 results/**
 reports/**
-!results/README.md
+
+# Research notebooks are local-only except the sensitivity overview.
+notebooks/**
+*.ipynb
+!sensitivity_freeze_overview.ipynb
+
+# Reviewer worksheets copied to the repository root for public release.
+!reviewer_*.csv

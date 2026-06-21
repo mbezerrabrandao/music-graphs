@@ -49,6 +49,17 @@ def parse_args() -> argparse.Namespace:
         default=[1, 2, 3, 5, 10],
     )
     parser.add_argument("--progress-every", type=int, default=1000)
+    parser.add_argument(
+        "--k-sensitivity-values",
+        type=int,
+        nargs="+",
+        default=[],
+        help=(
+            "Additional sequential k values to audit by writing edge "
+            "tables under the edge output root. The materialized graph "
+            "still uses --window-size."
+        ),
+    )
     parser.add_argument("--min-scrobbles", type=int, default=3)
     parser.add_argument("--min-shared-sessions", type=int, default=2)
     parser.add_argument(
@@ -95,6 +106,34 @@ if __name__ == "__main__":
             str(args.progress_every),
         ]
     )
+
+    if args.mode == "sequential" and args.k_sensitivity_values:
+        for sensitivity_k in sorted(set(args.k_sensitivity_values)):
+            if sensitivity_k == args.window_size:
+                continue
+
+            run(
+                [
+                    sys.executable,
+                    str(build_edges),
+                    str(args.sessions_csv),
+                    "--output-root",
+                    str(args.edge_output_root),
+                    "--mode",
+                    args.mode,
+                    "--window-size",
+                    str(sensitivity_k),
+                    "--window-minutes",
+                    str(args.window_minutes),
+                    "--min-shared-session-thresholds",
+                    *[
+                        str(value)
+                        for value in args.min_shared_session_thresholds
+                    ],
+                    "--progress-every",
+                    str(args.progress_every),
+                ]
+            )
 
     variant = variant_name(
         mode=args.mode,

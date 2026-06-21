@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Any
 
 
 def load_module() -> Any:
@@ -26,19 +25,6 @@ def load_module() -> Any:
 
 if __name__ == "__main__":
     module = load_module()
-
-    module.METHOD_ORDER = [
-        "leiden_behavioral_balanced",
-        "louvain_behavioral_balanced",
-        "node2vec_balanced",
-        "smooth2_behavioral_control",
-    ]
-
-    def select_no_gae_runs(**_: Any) -> list[dict[str, Any]]:
-        return []
-
-    module.select_gae_runs = select_no_gae_runs
-
     args = module.parse_args()
 
     module.run_evaluation(
@@ -58,4 +44,12 @@ if __name__ == "__main__":
         smooth2_partition_root=args.smooth2_partition_root,
         gae_combined_runs_csv=args.gae_combined_runs_csv,
         gae_partition_root=args.gae_partition_root,
+        acoustic_baseline_runs_csv=args.acoustic_baseline_runs_csv,
+        acoustic_baseline_partition_root=args.acoustic_baseline_partition_root,
+        acoustic_node2vec_runs_csv=args.acoustic_node2vec_runs_csv,
+        acoustic_node2vec_partition_root=args.acoustic_node2vec_partition_root,
+        acoustic_smooth2_runs_csv=args.acoustic_smooth2_runs_csv,
+        acoustic_smooth2_partition_root=args.acoustic_smooth2_partition_root,
+        acoustic_gae_combined_runs_csv=args.acoustic_gae_combined_runs_csv,
+        acoustic_gae_partition_root=args.acoustic_gae_partition_root,
     )

@@ -24,6 +24,14 @@ def parse_args() -> argparse.Namespace:
         default=[15, 30, 45, 60, 90, 120],
     )
     parser.add_argument("--expected-selected", type=int, default=60)
+    parser.add_argument(
+        "--allow-new-selection",
+        action="store_true",
+        help=(
+            "Record the threshold selected for the current data instead of "
+            "validating against a frozen expected value."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -53,7 +61,7 @@ if __name__ == "__main__":
         ),
     )
 
-    if selected != args.expected_selected:
+    if not args.allow_new_selection and selected != args.expected_selected:
         raise RuntimeError(
             "The automatically selected threshold differs from the frozen "
             f"manuscript choice: selected={selected}, "

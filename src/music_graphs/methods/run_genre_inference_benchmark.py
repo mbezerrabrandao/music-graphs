@@ -32,6 +32,11 @@ DEFAULT_FAMILIES = [
     "smooth2",
     "node2vec",
     "gae",
+    "acoustic_raw",
+    "acoustic_smooth1",
+    "acoustic_smooth2",
+    "acoustic_node2vec",
+    "acoustic_gae",
 ]
 
 FAMILY_ORDER = {
@@ -40,14 +45,24 @@ FAMILY_ORDER = {
     "smooth2": 2,
     "node2vec": 3,
     "gae": 4,
+    "acoustic_raw": 5,
+    "acoustic_smooth1": 6,
+    "acoustic_smooth2": 7,
+    "acoustic_node2vec": 8,
+    "acoustic_gae": 9,
 }
 
 FAMILY_DISPLAY_NAMES = {
     "raw": "Behavioral raw",
     "smooth1": "Behavioral smooth1",
     "smooth2": "Behavioral smooth2",
-    "node2vec": "Node2Vec",
+    "node2vec": "Node2Vec behavioral",
     "gae": "GAE behavioral",
+    "acoustic_raw": "Acoustic raw",
+    "acoustic_smooth1": "Acoustic smooth1",
+    "acoustic_smooth2": "Acoustic smooth2",
+    "acoustic_node2vec": "Node2Vec acoustic",
+    "acoustic_gae": "GAE acoustic",
 }
 
 
@@ -285,12 +300,198 @@ def require_expected_seed_files(
     ]
 
 
+
+
+def format_node2vec_parameter(
+    value: float,
+) -> str:
+    return (
+        f"{float(value):.1f}"
+        .replace(
+            ".",
+            "_",
+        )
+    )
+
+
+def select_node2vec_walk_bias_from_runs(
+    *,
+    runs_csv: Path,
+    balanced_k: int = 54,
+) -> tuple[
+    float,
+    float,
+]:
+    if not runs_csv.exists():
+        raise FileNotFoundError(
+            f"Missing Node2Vec run table: {runs_csv}"
+        )
+
+    runs = pd.read_csv(
+        runs_csv
+    )
+
+    required_columns = {
+        "p",
+        "q",
+        "seed",
+        "k",
+        "silhouette_score",
+    }
+    missing_columns = sorted(
+        required_columns - set(
+            runs.columns
+        )
+    )
+    if missing_columns:
+        raise ValueError(
+            "Node2Vec run table is missing columns: "
+            + ", ".join(
+                missing_columns
+            )
+        )
+
+    balanced_runs = runs.loc[
+        pd.to_numeric(
+            runs[
+                "k"
+            ],
+            errors="raise",
+        )
+        == balanced_k
+    ].copy()
+
+    if balanced_runs.empty:
+        raise ValueError(
+            f"No Node2Vec runs found at balanced k={balanced_k}: "
+            f"{runs_csv}"
+        )
+
+    balanced_runs[
+        "silhouette_score"
+    ] = pd.to_numeric(
+        balanced_runs[
+            "silhouette_score"
+        ],
+        errors="raise",
+    )
+
+    selected = (
+        balanced_runs
+        .groupby(
+            [
+                "p",
+                "q",
+            ],
+            as_index=False,
+        )
+        .agg(
+            silhouette_mean=(
+                "silhouette_score",
+                "mean",
+            ),
+            seed_count=(
+                "seed",
+                "nunique",
+            ),
+        )
+        .sort_values(
+            [
+                "silhouette_mean",
+                "seed_count",
+                "p",
+                "q",
+            ],
+            ascending=[
+                False,
+                False,
+                True,
+                True,
+            ],
+        )
+        .iloc[0]
+    )
+
+    return (
+        float(
+            selected[
+                "p"
+            ]
+        ),
+        float(
+            selected[
+                "q"
+            ]
+        ),
+    )
+
+
+def selected_node2vec_embedding_files(
+    *,
+    runs_csv: Path,
+    embeddings_dir: Path,
+    expected_seeds: list[int],
+    family: str,
+) -> tuple[
+    list[
+        tuple[
+            Path,
+            int,
+        ]
+    ],
+    float,
+    float,
+]:
+    if not embeddings_dir.exists():
+        raise FileNotFoundError(
+            f"{family} embeddings directory does not exist: "
+            f"{embeddings_dir}"
+        )
+
+    selected_p, selected_q = select_node2vec_walk_bias_from_runs(
+        runs_csv=runs_csv
+    )
+
+    p_token = format_node2vec_parameter(
+        selected_p
+    )
+    q_token = format_node2vec_parameter(
+        selected_q
+    )
+
+    paths = sorted(
+        embeddings_dir.glob(
+            f"node2vec_p_{p_token}_q_{q_token}_seed_*.csv"
+        )
+    )
+
+    if not paths:
+        raise FileNotFoundError(
+            f"No selected {family} embedding files found under "
+            f"{embeddings_dir} for p={selected_p}, q={selected_q}."
+        )
+
+    return (
+        require_expected_seed_files(
+            paths=paths,
+            expected_seeds=expected_seeds,
+            family=family,
+        ),
+        selected_p,
+        selected_q,
+    )
+
 def discover_representations(
     *,
     families: list[str],
     behavioral_control_embeddings_dir: Path,
     node2vec_embeddings_dir: Path,
+    node2vec_runs_csv: Path,
     gae_embeddings_dir: Path,
+    acoustic_control_embeddings_dir: Path,
+    acoustic_node2vec_embeddings_dir: Path,
+    acoustic_node2vec_runs_csv: Path,
+    acoustic_gae_embeddings_dir: Path,
     expected_seeds: list[int],
 ) -> list[
     RepresentationFile
@@ -327,34 +528,24 @@ def discover_representations(
             )
 
         elif family == "node2vec":
-            if not node2vec_embeddings_dir.exists():
-                raise FileNotFoundError(
-                    "Node2Vec embeddings directory does not exist: "
-                    f"{node2vec_embeddings_dir}"
-                )
-
-            paths = sorted(
-                node2vec_embeddings_dir.glob(
-                    "node2vec_p_2_0_q_2_0_seed_*.csv"
-                )
-            )
-
-            if not paths:
-                raise FileNotFoundError(
-                    "No selected Node2Vec embedding files found under: "
-                    f"{node2vec_embeddings_dir}"
-                )
-
-            for path, seed in require_expected_seed_files(
-                paths=paths,
+            (
+                selected_files,
+                selected_p,
+                selected_q,
+            ) = selected_node2vec_embedding_files(
+                runs_csv=node2vec_runs_csv,
+                embeddings_dir=node2vec_embeddings_dir,
                 expected_seeds=expected_seeds,
                 family="Node2Vec",
-            ):
+            )
+
+            for path, seed in selected_files:
                 representations.append(
                     RepresentationFile(
                         family=family,
                         representation_id=(
-                            f"node2vec_p_2_0_q_2_0_seed_{seed}"
+                            f"node2vec_p_{selected_p:.1f}_"
+                            f"q_{selected_q:.1f}_seed_{seed}"
                         ),
                         path=path,
                         representation_seed=seed,
@@ -389,6 +580,92 @@ def discover_representations(
                     RepresentationFile(
                         family=family,
                         representation_id=path.stem,
+                        path=path,
+                        representation_seed=seed,
+                    )
+                )
+
+
+        elif family in {
+            "acoustic_raw",
+            "acoustic_smooth1",
+            "acoustic_smooth2",
+        }:
+            mode = family.removeprefix("acoustic_")
+            path = (
+                acoustic_control_embeddings_dir
+                / f"behavioral_features_{mode}.csv"
+            )
+
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"Missing acoustic-control embeddings: {path}"
+                )
+
+            representations.append(
+                RepresentationFile(
+                    family=family,
+                    representation_id=(
+                        f"acoustic_features_{mode}"
+                    ),
+                    path=path,
+                    representation_seed=None,
+                )
+            )
+
+        elif family == "acoustic_node2vec":
+            (
+                selected_files,
+                selected_p,
+                selected_q,
+            ) = selected_node2vec_embedding_files(
+                runs_csv=acoustic_node2vec_runs_csv,
+                embeddings_dir=acoustic_node2vec_embeddings_dir,
+                expected_seeds=expected_seeds,
+                family="Acoustic Node2Vec",
+            )
+
+            for path, seed in selected_files:
+                representations.append(
+                    RepresentationFile(
+                        family=family,
+                        representation_id=(
+                            f"acoustic_node2vec_p_{selected_p:.1f}_"
+                            f"q_{selected_q:.1f}_seed_{seed}"
+                        ),
+                        path=path,
+                        representation_seed=seed,
+                    )
+                )
+
+        elif family == "acoustic_gae":
+            if not acoustic_gae_embeddings_dir.exists():
+                raise FileNotFoundError(
+                    "Acoustic GAE embeddings directory does not exist: "
+                    f"{acoustic_gae_embeddings_dir}"
+                )
+
+            paths = sorted(
+                acoustic_gae_embeddings_dir.glob("*.csv")
+            )
+
+            if not paths:
+                raise FileNotFoundError(
+                    "No selected acoustic GAE embedding files found under: "
+                    f"{acoustic_gae_embeddings_dir}"
+                )
+
+            for path, seed in require_expected_seed_files(
+                paths=paths,
+                expected_seeds=expected_seeds,
+                family="Acoustic GAE",
+            ):
+                representations.append(
+                    RepresentationFile(
+                        family=family,
+                        representation_id=(
+                            f"acoustic_gae_seed_{seed}"
+                        ),
                         path=path,
                         representation_seed=seed,
                     )
@@ -495,37 +772,29 @@ def load_embedding_table(
         "artist_id"
     )
 
-    missing_ids = sorted(
-        set(
-            ordered_ids
-        )
-        - set(
-            table_indexed.index.astype(
-                str
-            )
-        )
-    )
-
-    if missing_ids:
-        raise ValueError(
-            f"Embedding table {representation.path} is missing graph nodes. "
-            f"Example: {missing_ids[0]}"
-        )
-
-    ordered_table = table_indexed.loc[
-        ordered_ids,
-        feature_columns,
+    ordered_table = table_indexed.reindex(
+        ordered_ids
+    )[
+        feature_columns
     ]
 
     matrix = ordered_table.to_numpy(
         dtype=np.float64,
     )
 
-    if not np.isfinite(
+    available_mask = ~np.isnan(
         matrix
-    ).all():
+    ).any(
+        axis=1
+    )
+
+    if np.isfinite(
+        matrix[
+            available_mask
+        ]
+    ).all() is False:
         raise ValueError(
-            f"Embedding table contains non-finite values: "
+            f"Embedding table contains non-finite values among available rows: "
             f"{representation.path}"
         )
 
@@ -673,6 +942,123 @@ def build_classifier(
     )
 
 
+
+
+def select_regularization_c(
+    *,
+    x: np.ndarray,
+    targets: np.ndarray,
+    candidate_cs: list[float],
+    cv_seed: int,
+    requested_folds: int,
+    max_iter: int,
+) -> tuple[float, pd.DataFrame]:
+    if not candidate_cs:
+        raise ValueError(
+            "At least one regularization C candidate is required."
+        )
+
+    candidate_cs = sorted(
+        {
+            float(candidate_c)
+            for candidate_c in candidate_cs
+        }
+    )
+
+    class_counts = pd.Series(
+        targets
+    ).value_counts()
+    inner_folds = min(
+        int(requested_folds),
+        int(class_counts.min()),
+    )
+
+    if inner_folds < 2:
+        return (
+            float(candidate_cs[0]),
+            pd.DataFrame.from_records(
+                [
+                    {
+                        "regularization_c": float(candidate_cs[0]),
+                        "inner_fold_count": int(inner_folds),
+                        "inner_macro_f1_mean": np.nan,
+                        "inner_macro_f1_std": np.nan,
+                        "selection_note": "fallback_min_class_support_below_2",
+                    }
+                ]
+            ),
+        )
+
+    splitter = StratifiedKFold(
+        n_splits=inner_folds,
+        shuffle=True,
+        random_state=cv_seed,
+    )
+
+    records: list[dict[str, Any]] = []
+
+    for candidate_c in candidate_cs:
+        fold_scores: list[float] = []
+
+        for inner_train_indices, inner_valid_indices in splitter.split(
+            x,
+            targets,
+        ):
+            classifier = build_classifier(
+                regularization_c=float(candidate_c),
+                max_iter=max_iter,
+            )
+            classifier.fit(
+                x[inner_train_indices],
+                targets[inner_train_indices],
+            )
+            predicted = classifier.predict(
+                x[inner_valid_indices]
+            )
+            fold_scores.append(
+                float(
+                    f1_score(
+                        targets[inner_valid_indices],
+                        predicted,
+                        average="macro",
+                        zero_division=0,
+                    )
+                )
+            )
+
+        records.append(
+            {
+                "regularization_c": float(candidate_c),
+                "inner_fold_count": int(inner_folds),
+                "inner_macro_f1_mean": float(np.mean(fold_scores)),
+                "inner_macro_f1_std": float(np.std(fold_scores, ddof=1))
+                if len(fold_scores) > 1
+                else 0.0,
+                "selection_note": "inner_cv_macro_f1",
+            }
+        )
+
+    summary = (
+        pd.DataFrame.from_records(records)
+        .sort_values(
+            [
+                "inner_macro_f1_mean",
+                "regularization_c",
+            ],
+            ascending=[
+                False,
+                True,
+            ],
+        )
+        .reset_index(drop=True)
+    )
+
+    return (
+        float(summary.iloc[0]["regularization_c"]),
+        summary,
+    )
+
+
 def safe_top_k(
     requested_k: int,
     class_count: int,
@@ -754,16 +1140,60 @@ def evaluate_one_representation(
     targets: np.ndarray,
     cv_seeds: list[int],
     cv_folds: int,
-    regularization_c: float,
+    regularization_c_grid: list[float],
     max_iter: int,
     top_k: int,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
 ]:
-    x = feature_matrix[
+    available_mask = np.isfinite(
+        feature_matrix
+    ).all(
+        axis=1
+    )
+
+    retained_available_mask = available_mask[
         retained_indices
     ]
+    local_retained_indices = retained_indices[
+        retained_available_mask
+    ]
+    local_targets = targets[
+        retained_available_mask
+    ]
+
+    target_counts = pd.Series(
+        local_targets
+    ).value_counts()
+
+    retained_classes = target_counts.loc[
+        target_counts >= cv_folds
+    ].index.astype(str).tolist()
+
+    local_class_mask = pd.Series(
+        local_targets
+    ).isin(
+        retained_classes
+    ).to_numpy()
+
+    local_retained_indices = local_retained_indices[
+        local_class_mask
+    ]
+    local_targets = local_targets[
+        local_class_mask
+    ]
+
+    if len(retained_classes) < 2:
+        raise ValueError(
+            "Representation has fewer than two genres with enough covered "
+            f"artists for CV: {representation.representation_id}."
+        )
+
+    x = feature_matrix[
+        local_retained_indices
+    ]
+    targets = local_targets
 
     target_counts = (
         pd.Series(
@@ -840,8 +1270,24 @@ def evaluate_one_representation(
             ),
             start=1,
         ):
+            (
+                selected_regularization_c,
+                inner_c_summary,
+            ) = select_regularization_c(
+                x=x[
+                    train_indices
+                ],
+                targets=targets[
+                    train_indices
+                ],
+                candidate_cs=regularization_c_grid,
+                cv_seed=cv_seed + fold_index,
+                requested_folds=cv_folds,
+                max_iter=max_iter,
+            )
+
             classifier = build_classifier(
-                regularization_c=regularization_c,
+                regularization_c=selected_regularization_c,
                 max_iter=max_iter,
             )
 
@@ -945,6 +1391,22 @@ def evaluate_one_representation(
                     "fold_index": int(
                         fold_index
                     ),
+                    "available_labeled_node_count": int(
+                        len(
+                            targets
+                        )
+                    ),
+                    "available_labeled_fraction": float(
+                        len(
+                            targets
+                        )
+                        / max(
+                            len(
+                                retained_indices
+                            ),
+                            1,
+                        )
+                    ),
                     "train_node_count": int(
                         len(
                             train_indices
@@ -953,6 +1415,22 @@ def evaluate_one_representation(
                     "test_node_count": int(
                         len(
                             test_indices
+                        )
+                    ),
+                    "selected_regularization_c": float(
+                        selected_regularization_c
+                    ),
+                    "inner_best_macro_f1": (
+                        np.nan
+                        if pd.isna(
+                            inner_c_summary.iloc[0][
+                                "inner_macro_f1_mean"
+                            ]
+                        )
+                        else float(
+                            inner_c_summary.iloc[0][
+                                "inner_macro_f1_mean"
+                            ]
                         )
                     ),
                     **metrics,
@@ -992,6 +1470,22 @@ def evaluate_one_representation(
                 "cv_seed": int(
                     cv_seed
                 ),
+                "available_labeled_node_count": int(
+                    len(
+                        targets
+                    )
+                ),
+                "available_labeled_fraction": float(
+                    len(
+                        targets
+                    )
+                    / max(
+                        len(
+                            retained_indices
+                        ),
+                        1,
+                    )
+                ),
                 "evaluated_node_count": int(
                     len(
                         targets
@@ -1001,6 +1495,22 @@ def evaluate_one_representation(
                     len(
                         global_classes
                     )
+                ),
+                "selected_regularization_c_median": float(
+                    pd.Series(
+                        [
+                            record[
+                                "selected_regularization_c"
+                            ]
+                            for record in fold_records
+                            if record[
+                                "representation_id"
+                            ] == representation.representation_id
+                            and record[
+                                "cv_seed"
+                            ] == int(cv_seed)
+                        ]
+                    ).median()
                 ),
                 **repeat_metrics,
             }
@@ -1043,6 +1553,14 @@ def summarize_cv_runs(
             ),
             retained_genre_count=(
                 "retained_genre_count",
+                "mean",
+            ),
+            selected_regularization_c_median=(
+                "selected_regularization_c_median",
+                "median",
+            ),
+            selected_regularization_c_mean=(
+                "selected_regularization_c_median",
                 "mean",
             ),
             accuracy_mean=(
@@ -1164,7 +1682,7 @@ def predict_unknown_for_family(
     retained_indices: np.ndarray,
     targets: np.ndarray,
     retained_genres: list[str],
-    regularization_c: float,
+    regularization_c_grid: list[float],
     max_iter: int,
 ) -> pd.DataFrame:
     unknown_indices = np.flatnonzero(
@@ -1180,6 +1698,55 @@ def predict_unknown_for_family(
     ) == 0:
         raise ValueError(
             "No unlabeled graph nodes are available for inference."
+        )
+
+    common_unknown_mask = np.ones(
+        len(
+            unknown_indices
+        ),
+        dtype=bool,
+    )
+
+    for representation in representations:
+        feature_matrix = feature_matrices[
+            representation.representation_id
+        ]
+        representation_available_mask = np.isfinite(
+            feature_matrix
+        ).all(
+            axis=1
+        )
+        common_unknown_mask &= representation_available_mask[
+            unknown_indices
+        ]
+
+    unknown_indices = unknown_indices[
+        common_unknown_mask
+    ]
+
+    if len(
+        unknown_indices
+    ) == 0:
+        return pd.DataFrame(
+            columns=[
+                "family_order",
+                "family",
+                "family_display_name",
+                "artist_id",
+                "artist_name",
+                "artist_mbid",
+                "metadata_group",
+                "prediction_top1_genre",
+                "prediction_top1_probability",
+                "prediction_top2_genre",
+                "prediction_top2_probability",
+                "prediction_top3_genre",
+                "prediction_top3_probability",
+                "top1_top2_probability_margin",
+                "normalized_entropy",
+                "confidence_band_heuristic",
+                "ensemble_representation_count",
+            ]
         )
 
     class_names = np.asarray(
@@ -1208,21 +1775,76 @@ def predict_unknown_for_family(
         dtype=np.float64,
     )
 
+    contributing_representation_count = 0
+
     for representation in representations:
         feature_matrix = feature_matrices[
             representation.representation_id
         ]
+        available_mask = np.isfinite(
+            feature_matrix
+        ).all(
+            axis=1
+        )
+
+        retained_available_mask = available_mask[
+            retained_indices
+        ]
+        local_retained_indices = retained_indices[
+            retained_available_mask
+        ]
+        local_targets = targets[
+            retained_available_mask
+        ]
+
+        target_counts = pd.Series(
+            local_targets
+        ).value_counts()
+        local_classes = target_counts.loc[
+            target_counts >= 2
+        ].index.astype(str).tolist()
+
+        if len(
+            local_classes
+        ) < 2:
+            continue
+
+        local_class_mask = pd.Series(
+            local_targets
+        ).isin(
+            local_classes
+        ).to_numpy()
+        local_retained_indices = local_retained_indices[
+            local_class_mask
+        ]
+        local_targets = local_targets[
+            local_class_mask
+        ]
+
+        (
+            selected_regularization_c,
+            _,
+        ) = select_regularization_c(
+            x=feature_matrix[
+                local_retained_indices
+            ],
+            targets=local_targets,
+            candidate_cs=regularization_c_grid,
+            cv_seed=0,
+            requested_folds=5,
+            max_iter=max_iter,
+        )
 
         classifier = build_classifier(
-            regularization_c=regularization_c,
+            regularization_c=selected_regularization_c,
             max_iter=max_iter,
         )
 
         classifier.fit(
             feature_matrix[
-                retained_indices
+                local_retained_indices
             ],
-            targets,
+            local_targets,
         )
 
         probabilities = classifier.predict_proba(
@@ -1242,12 +1864,15 @@ def predict_unknown_for_family(
         for local_index, class_name in enumerate(
             local_classes
         ):
+            class_name = str(
+                class_name
+            )
+            if class_name not in class_to_index:
+                continue
             aligned_probabilities[
                 :,
                 class_to_index[
-                    str(
-                        class_name
-                    )
+                    class_name
                 ],
             ] = probabilities[
                 :,
@@ -1255,12 +1880,17 @@ def predict_unknown_for_family(
             ]
 
         probability_sum += aligned_probabilities
+        contributing_representation_count += 1
+
+    if contributing_representation_count == 0:
+        raise ValueError(
+            "No representation in family has enough covered labeled artists "
+            f"to infer unknown genres: {family}."
+        )
 
     probabilities = (
         probability_sum
-        / len(
-            representations
-        )
+        / contributing_representation_count
     )
 
     sorted_indices = np.argsort(
@@ -1415,9 +2045,7 @@ def predict_unknown_for_family(
                     confidence_band
                 ),
                 "ensemble_representation_count": int(
-                    len(
-                        representations
-                    )
+                    contributing_representation_count
                 ),
             }
         )
@@ -1447,14 +2075,19 @@ def run_benchmark(
     labels_csv: Path,
     behavioral_control_embeddings_dir: Path,
     node2vec_embeddings_dir: Path,
+    node2vec_runs_csv: Path,
     gae_embeddings_dir: Path,
+    acoustic_control_embeddings_dir: Path,
+    acoustic_node2vec_embeddings_dir: Path,
+    acoustic_node2vec_runs_csv: Path,
+    acoustic_gae_embeddings_dir: Path,
     output_dir: Path,
     families: list[str],
     expected_seeds: list[int],
     cv_seeds: list[int],
     cv_folds: int,
     minimum_genre_support: int,
-    regularization_c: float,
+    regularization_c_grid: list[float],
     max_iter: int,
     top_k: int,
 ) -> None:
@@ -1501,8 +2134,23 @@ def run_benchmark(
         node2vec_embeddings_dir=(
             node2vec_embeddings_dir
         ),
+        node2vec_runs_csv=(
+            node2vec_runs_csv
+        ),
         gae_embeddings_dir=(
             gae_embeddings_dir
+        ),
+        acoustic_control_embeddings_dir=(
+            acoustic_control_embeddings_dir
+        ),
+        acoustic_node2vec_embeddings_dir=(
+            acoustic_node2vec_embeddings_dir
+        ),
+        acoustic_node2vec_runs_csv=(
+            acoustic_node2vec_runs_csv
+        ),
+        acoustic_gae_embeddings_dir=(
+            acoustic_gae_embeddings_dir
         ),
         expected_seeds=(
             expected_seeds
@@ -1581,7 +2229,7 @@ def run_benchmark(
             targets=targets,
             cv_seeds=cv_seeds,
             cv_folds=cv_folds,
-            regularization_c=regularization_c,
+            regularization_c_grid=regularization_c_grid,
             max_iter=max_iter,
             top_k=top_k,
         )
@@ -1653,8 +2301,8 @@ def run_benchmark(
             retained_genres=(
                 retained_genres
             ),
-            regularization_c=(
-                regularization_c
+            regularization_c_grid=(
+                regularization_c_grid
             ),
             max_iter=max_iter,
         )
@@ -1827,8 +2475,23 @@ def run_benchmark(
             "node2vec_embeddings_dir": str(
                 node2vec_embeddings_dir
             ),
+            "node2vec_runs_csv": str(
+                node2vec_runs_csv
+            ),
             "gae_embeddings_dir": str(
                 gae_embeddings_dir
+            ),
+            "acoustic_control_embeddings_dir": str(
+                acoustic_control_embeddings_dir
+            ),
+            "acoustic_node2vec_embeddings_dir": str(
+                acoustic_node2vec_embeddings_dir
+            ),
+            "acoustic_node2vec_runs_csv": str(
+                acoustic_node2vec_runs_csv
+            ),
+            "acoustic_gae_embeddings_dir": str(
+                acoustic_gae_embeddings_dir
             ),
         },
         "configuration": {
@@ -1846,8 +2509,12 @@ def run_benchmark(
             "classifier": (
                 "LogisticRegression with class_weight=balanced"
             ),
-            "regularization_c": float(
-                regularization_c
+            "regularization_c_grid": [
+                float(candidate_c)
+                for candidate_c in regularization_c_grid
+            ],
+            "regularization_selection": (
+                "nested inner-CV macro-F1 within each outer fold"
             ),
             "max_iter": int(
                 max_iter
@@ -2045,11 +2712,51 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--node2vec-runs-csv",
+        type=Path,
+        default=Path(
+            "results/node2vec_final_candidates/node2vec_clustering_runs.csv"
+        ),
+    )
+
+    parser.add_argument(
         "--gae-embeddings-dir",
         type=Path,
         default=Path(
             "results/graph_autoencoder_final_candidates_no_leakage/"
-            "latent_16_lr_0_005/embeddings"
+            "selected/embeddings"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-control-embeddings-dir",
+        type=Path,
+        default=Path(
+            "results/acoustic_feature_controls/embeddings"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-node2vec-embeddings-dir",
+        type=Path,
+        default=Path(
+            "results/acoustic_node2vec_final_candidates/embeddings"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-node2vec-runs-csv",
+        type=Path,
+        default=Path(
+            "results/acoustic_node2vec_final_candidates/node2vec_clustering_runs.csv"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-gae-embeddings-dir",
+        type=Path,
+        default=Path(
+            "results/acoustic_graph_autoencoder_final_candidates/selected/embeddings"
         ),
     )
 
@@ -2103,6 +2810,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--regularization-c-grid",
+        nargs="+",
+        type=float,
+        default=None,
+    )
+
+    parser.add_argument(
         "--max-iter",
         type=int,
         default=5000,
@@ -2130,9 +2844,20 @@ if __name__ == "__main__":
             "--minimum-genre-support must be positive."
         )
 
-    if args.regularization_c <= 0:
+    regularization_c_grid = (
+        args.regularization_c_grid
+        if args.regularization_c_grid is not None
+        else [
+            args.regularization_c
+        ]
+    )
+
+    if any(
+        candidate_c <= 0
+        for candidate_c in regularization_c_grid
+    ):
         raise ValueError(
-            "--regularization-c must be positive."
+            "All regularization C values must be positive."
         )
 
     if args.max_iter < 1:
@@ -2153,8 +2878,23 @@ if __name__ == "__main__":
         node2vec_embeddings_dir=(
             args.node2vec_embeddings_dir
         ),
+        node2vec_runs_csv=(
+            args.node2vec_runs_csv
+        ),
         gae_embeddings_dir=(
             args.gae_embeddings_dir
+        ),
+        acoustic_control_embeddings_dir=(
+            args.acoustic_control_embeddings_dir
+        ),
+        acoustic_node2vec_embeddings_dir=(
+            args.acoustic_node2vec_embeddings_dir
+        ),
+        acoustic_node2vec_runs_csv=(
+            args.acoustic_node2vec_runs_csv
+        ),
+        acoustic_gae_embeddings_dir=(
+            args.acoustic_gae_embeddings_dir
         ),
         output_dir=args.output_dir,
         families=args.families,
@@ -2164,8 +2904,8 @@ if __name__ == "__main__":
         minimum_genre_support=(
             args.minimum_genre_support
         ),
-        regularization_c=(
-            args.regularization_c
+        regularization_c_grid=(
+            regularization_c_grid
         ),
         max_iter=args.max_iter,
         top_k=args.top_k,

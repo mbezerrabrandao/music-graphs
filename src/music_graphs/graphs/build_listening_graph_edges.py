@@ -167,6 +167,7 @@ def iter_candidate_pairs(
                 artist_ids[index_a],
                 artist_ids[index_b],
                 float(gap_minutes),
+                int(index_b - index_a),
             )
 
 
@@ -175,6 +176,12 @@ def empty_stats() -> dict[str, Any]:
         "proximity_count": 0,
         "shared_session_count": 0,
         "gap_sum_minutes": 0.0,
+        "sequence_distance_sum": 0.0,
+        "min_sequence_distance": math.inf,
+        "max_sequence_distance": 0,
+        "decayed_proximity_sum": 0.0,
+        "max_session_decay": 0.0,
+        "decayed_shared_session_sum": 0.0,
         "min_gap_minutes": math.inf,
         "max_gap_minutes": 0.0,
         "same_timestamp_pair_count": 0,
@@ -228,7 +235,7 @@ def build_edge_table(
             dict[str, Any],
         ] = {}
 
-        for artist_a, artist_b, gap_minutes in (
+        for artist_a, artist_b, gap_minutes, sequence_distance in (
             iter_candidate_pairs(
                 artist_ids=artist_ids,
                 timestamps=timestamps,
@@ -255,6 +262,21 @@ def build_edge_table(
 
             stats["proximity_count"] += 1
             stats["gap_sum_minutes"] += gap_minutes
+            stats["sequence_distance_sum"] += sequence_distance
+            stats["min_sequence_distance"] = min(
+                stats["min_sequence_distance"],
+                sequence_distance,
+            )
+            stats["max_sequence_distance"] = max(
+                stats["max_sequence_distance"],
+                sequence_distance,
+            )
+            decay = 1.0 / float(sequence_distance)
+            stats["decayed_proximity_sum"] += decay
+            stats["max_session_decay"] = max(
+                stats["max_session_decay"],
+                decay,
+            )
 
             stats["min_gap_minutes"] = min(
                 stats["min_gap_minutes"],
@@ -281,6 +303,28 @@ def build_edge_table(
 
             global_stats["proximity_count"] += (
                 local_stats["proximity_count"]
+            )
+
+            global_stats["sequence_distance_sum"] += (
+                local_stats["sequence_distance_sum"]
+            )
+
+            global_stats["min_sequence_distance"] = min(
+                global_stats["min_sequence_distance"],
+                local_stats["min_sequence_distance"],
+            )
+
+            global_stats["max_sequence_distance"] = max(
+                global_stats["max_sequence_distance"],
+                local_stats["max_sequence_distance"],
+            )
+
+            global_stats["decayed_proximity_sum"] += (
+                local_stats["decayed_proximity_sum"]
+            )
+
+            global_stats["decayed_shared_session_sum"] += (
+                local_stats["max_session_decay"]
             )
 
             global_stats["shared_session_count"] += 1
@@ -337,6 +381,27 @@ def build_edge_table(
                 ),
                 "shared_user_count": int(
                     len(stats["user_ids"])
+                ),
+                "decayed_proximity_sum": round(
+                    float(stats["decayed_proximity_sum"]),
+                    10,
+                ),
+                "decayed_shared_session_sum": round(
+                    float(stats["decayed_shared_session_sum"]),
+                    10,
+                ),
+                "mean_sequence_distance": round(
+                    float(
+                        stats["sequence_distance_sum"]
+                        / proximity_count
+                    ),
+                    6,
+                ),
+                "min_sequence_distance": int(
+                    stats["min_sequence_distance"]
+                ),
+                "max_sequence_distance": int(
+                    stats["max_sequence_distance"]
                 ),
                 "mean_gap_minutes": round(
                     float(
@@ -492,6 +557,17 @@ def add_normalized_weights(
         )
     )
 
+    edges["decayed_shared_session_cosine"] = (
+        edges["decayed_shared_session_sum"]
+        / (
+            edges["artist_a_session_count"]
+            .mul(
+                edges["artist_b_session_count"]
+            )
+            .pow(0.5)
+        )
+    )
+
     edges["shared_session_jaccard"] = (
         edges["shared_session_count"]
         / (
@@ -506,11 +582,18 @@ def add_normalized_weights(
         * edges["shared_user_count"].pow(0.5)
     )
 
+    edges["multi_user_decayed_shared_session_cosine"] = (
+        edges["decayed_shared_session_cosine"]
+        * edges["shared_user_count"].pow(0.5)
+    )
+
     for column in [
         "proximity_cosine",
         "shared_session_cosine",
+        "decayed_shared_session_cosine",
         "shared_session_jaccard",
         "multi_user_shared_session_cosine",
+        "multi_user_decayed_shared_session_cosine",
     ]:
         edges[column] = edges[column].round(10)
 
@@ -522,10 +605,17 @@ def add_normalized_weights(
         "proximity_count",
         "shared_session_count",
         "shared_user_count",
+        "decayed_proximity_sum",
+        "decayed_shared_session_sum",
         "proximity_cosine",
         "shared_session_cosine",
+        "decayed_shared_session_cosine",
         "multi_user_shared_session_cosine",
+        "multi_user_decayed_shared_session_cosine",
         "shared_session_jaccard",
+        "mean_sequence_distance",
+        "min_sequence_distance",
+        "max_sequence_distance",
         "mean_gap_minutes",
         "min_gap_minutes",
         "max_gap_minutes",
@@ -542,13 +632,14 @@ def add_normalized_weights(
         edges[preferred_column_order]
         .sort_values(
             [
+                "multi_user_decayed_shared_session_cosine",
                 "multi_user_shared_session_cosine",
                 "shared_session_cosine",
                 "shared_user_count",
                 "shared_session_count",
                 "proximity_count",
             ],
-            ascending=[False, False, False, False, False],
+            ascending=[False, False, False, False, False, False],
         )
         .reset_index(drop=True)
     )
@@ -694,6 +785,20 @@ def summarize_filtered_graph(
             if (
                 not filtered_edges.empty
                 and "multi_user_shared_session_cosine"
+                in filtered_edges.columns
+            )
+            else 0.0,
+            10,
+        ),
+        "median_multi_user_decayed_shared_session_cosine": round(
+            float(
+                filtered_edges[
+                    "multi_user_decayed_shared_session_cosine"
+                ].median()
+            )
+            if (
+                not filtered_edges.empty
+                and "multi_user_decayed_shared_session_cosine"
                 in filtered_edges.columns
             )
             else 0.0,
@@ -851,7 +956,10 @@ def build_listening_graph_edges(
             min_shared_session_thresholds
         ),
         "default_recommended_edge_weight_for_audit": (
-            "multi_user_shared_session_cosine"
+            "multi_user_decayed_shared_session_cosine"
+        ),
+        "distance_decay_rule": (
+            "1 over sequential distance"
         ),
         "outputs": {
             "edges_raw": str(

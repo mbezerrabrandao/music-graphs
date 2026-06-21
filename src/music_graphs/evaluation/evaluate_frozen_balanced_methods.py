@@ -25,17 +25,27 @@ DEFAULT_EXPECTED_SEEDS = [42, 43, 44, 45, 46]
 METHOD_ORDER = [
     "leiden_behavioral_balanced",
     "louvain_behavioral_balanced",
-    "node2vec_balanced",
+    "node2vec_behavioral_balanced",
     "smooth2_behavioral_control",
     "gae_behavioral_balanced",
+    "leiden_acoustic_balanced",
+    "louvain_acoustic_balanced",
+    "node2vec_acoustic_balanced",
+    "smooth2_acoustic_control",
+    "gae_acoustic_balanced",
 ]
 
 METHOD_DISPLAY_NAMES = {
-    "leiden_behavioral_balanced": "Leiden",
-    "louvain_behavioral_balanced": "Louvain",
-    "node2vec_balanced": "Node2Vec + K-Means",
+    "leiden_behavioral_balanced": "Leiden behavioral",
+    "louvain_behavioral_balanced": "Louvain behavioral",
+    "node2vec_behavioral_balanced": "Node2Vec behavioral + K-Means",
     "smooth2_behavioral_control": "Behavioral smooth2 + K-Means",
     "gae_behavioral_balanced": "GAE behavioral + K-Means",
+    "leiden_acoustic_balanced": "Leiden acoustic",
+    "louvain_acoustic_balanced": "Louvain acoustic",
+    "node2vec_acoustic_balanced": "Node2Vec acoustic + K-Means",
+    "smooth2_acoustic_control": "Acoustic smooth2 + K-Means",
+    "gae_acoustic_balanced": "GAE acoustic + K-Means",
 }
 
 
@@ -401,6 +411,7 @@ def select_node2vec_runs(
         "q",
         "seed",
         "k",
+        "silhouette_score",
     }
 
     missing_columns = sorted(
@@ -417,31 +428,86 @@ def select_node2vec_runs(
             )
         )
 
-    selected = runs.loc[
-        runs[
+    balanced_runs = runs.loc[
+        pd.to_numeric(
+            runs[
+                "k"
+            ],
+            errors="raise",
+        )
+        == 54
+    ].copy()
+
+    if balanced_runs.empty:
+        raise ValueError(
+            "No Node2Vec runs were found at balanced k=54."
+        )
+
+    balanced_runs[
+        "silhouette_score"
+    ] = pd.to_numeric(
+        balanced_runs[
+            "silhouette_score"
+        ],
+        errors="raise",
+    )
+
+    selected_pq = (
+        balanced_runs
+        .groupby(
+            [
+                "p",
+                "q",
+            ],
+            as_index=False,
+        )
+        .agg(
+            silhouette_mean=(
+                "silhouette_score",
+                "mean",
+            ),
+            seed_count=(
+                "seed",
+                "nunique",
+            ),
+        )
+        .sort_values(
+            [
+                "silhouette_mean",
+                "seed_count",
+                "p",
+                "q",
+            ],
+            ascending=[
+                False,
+                False,
+                True,
+                True,
+            ],
+        )
+        .iloc[0]
+    )
+
+    selected = balanced_runs.loc[
+        balanced_runs[
             "p"
         ].map(
             lambda value: float_close(
                 value,
-                2.0,
+                float(selected_pq[
+                    "p"
+                ]),
             )
         )
-        & runs[
+        & balanced_runs[
             "q"
         ].map(
             lambda value: float_close(
                 value,
-                2.0,
+                float(selected_pq[
+                    "q"
+                ]),
             )
-        )
-        & (
-            pd.to_numeric(
-                runs[
-                    "k"
-                ],
-                errors="raise",
-            )
-            == 54
         )
     ].copy()
 
@@ -463,7 +529,7 @@ def select_node2vec_runs(
 
     validate_selected_seeds(
         method_id=(
-            "node2vec_balanced"
+            "node2vec_behavioral_balanced"
         ),
         rows=selected,
         expected_seeds=expected_seeds,
@@ -495,7 +561,7 @@ def select_node2vec_runs(
         records.append(
             base_manifest_record(
                 method_id=(
-                    "node2vec_balanced"
+                    "node2vec_behavioral_balanced"
                 ),
                 run_id=run_id,
                 seed=required_int(
@@ -671,6 +737,13 @@ def select_smooth2_runs(
     return records
 
 
+def _truthy_series(values: pd.Series) -> pd.Series:
+    return values.map(
+        lambda value: str(value).strip().lower()
+        in {"1", "true", "t", "yes", "y"}
+    )
+
+
 def select_gae_runs(
     runs_csv: Path,
     partition_root: Path,
@@ -710,67 +783,91 @@ def select_gae_runs(
             )
         )
 
-    selected = runs.loc[
-        (
-            runs[
-                "feature_mode"
-            ].astype(
-                str
-            )
-            == "behavioral"
+    behavioral = runs.loc[
+        runs[
+            "feature_mode"
+        ].astype(
+            str
         )
-        & (
-            pd.to_numeric(
-                runs[
-                    "hidden_dim"
-                ],
-                errors="raise",
-            )
-            == 128
-        )
-        & (
-            pd.to_numeric(
-                runs[
-                    "latent_dim"
-                ],
-                errors="raise",
-            )
-            == 16
-        )
-        & runs[
-            "dropout"
-        ].map(
-            lambda value: float_close(
-                value,
-                0.1,
-            )
-        )
-        & runs[
-            "learning_rate"
-        ].map(
-            lambda value: float_close(
-                value,
-                0.005,
-            )
-        )
-        & runs[
-            "weight_decay"
-        ].map(
-            lambda value: float_close(
-                value,
-                0.0001,
-            )
-        )
-        & (
-            pd.to_numeric(
-                runs[
-                    "k"
-                ],
-                errors="raise",
-            )
-            == 54
-        )
+        == "behavioral"
     ].copy()
+
+    behavioral[
+        "k"
+    ] = pd.to_numeric(
+        behavioral[
+            "k"
+        ],
+        errors="raise",
+    ).astype(
+        int
+    )
+
+    if "selected_for_balanced_evaluation" in behavioral.columns:
+        selected = behavioral.loc[
+            _truthy_series(
+                behavioral[
+                    "selected_for_balanced_evaluation"
+                ]
+            )
+            & (
+                behavioral[
+                    "k"
+                ]
+                == 54
+            )
+        ].copy()
+    else:
+        selected = behavioral.loc[
+            (
+                pd.to_numeric(
+                    behavioral[
+                        "hidden_dim"
+                    ],
+                    errors="raise",
+                )
+                == 128
+            )
+            & (
+                pd.to_numeric(
+                    behavioral[
+                        "latent_dim"
+                    ],
+                    errors="raise",
+                )
+                == 16
+            )
+            & behavioral[
+                "dropout"
+            ].map(
+                lambda value: float_close(
+                    value,
+                    0.1,
+                )
+            )
+            & behavioral[
+                "learning_rate"
+            ].map(
+                lambda value: float_close(
+                    value,
+                    0.005,
+                )
+            )
+            & behavioral[
+                "weight_decay"
+            ].map(
+                lambda value: float_close(
+                    value,
+                    0.0001,
+                )
+            )
+            & (
+                behavioral[
+                    "k"
+                ]
+                == 54
+            )
+        ].copy()
 
     if selected.empty:
         raise ValueError(
@@ -841,23 +938,52 @@ def select_gae_runs(
                 ),
                 configuration={
                     "graph": (
-                        "behavioral_sequential_k5_support2_min3"
+                        "behavioral_sequential_k5_decay_support2_min3"
                     ),
                     "feature_mode": (
                         "behavioral"
                     ),
-                    "hidden_dim": 128,
-                    "latent_dim": 16,
-                    "dropout": 0.1,
-                    "learning_rate": 0.005,
-                    "weight_decay": 0.0001,
-                    "k": 54,
+                    "hidden_dim": required_int(
+                        row[
+                            "hidden_dim"
+                        ],
+                        "hidden_dim",
+                    ),
+                    "latent_dim": required_int(
+                        row[
+                            "latent_dim"
+                        ],
+                        "latent_dim",
+                    ),
+                    "dropout": required_float(
+                        row[
+                            "dropout"
+                        ],
+                        "dropout",
+                    ),
+                    "learning_rate": required_float(
+                        row[
+                            "learning_rate"
+                        ],
+                        "learning_rate",
+                    ),
+                    "weight_decay": required_float(
+                        row[
+                            "weight_decay"
+                        ],
+                        "weight_decay",
+                    ),
+                    "k": required_int(
+                        row[
+                            "k"
+                        ],
+                        "k",
+                    ),
                 },
             )
         )
 
     return records
-
 
 def build_manifest(
     *,
@@ -869,9 +995,17 @@ def build_manifest(
     smooth2_partition_root: Path,
     gae_combined_runs_csv: Path,
     gae_partition_root: Path,
+    acoustic_baseline_runs_csv: Path,
+    acoustic_baseline_partition_root: Path,
+    acoustic_node2vec_runs_csv: Path,
+    acoustic_node2vec_partition_root: Path,
+    acoustic_smooth2_runs_csv: Path,
+    acoustic_smooth2_partition_root: Path,
+    acoustic_gae_combined_runs_csv: Path,
+    acoustic_gae_partition_root: Path,
     expected_seeds: list[int],
 ) -> pd.DataFrame:
-    records = (
+    behavioral_records = (
         select_behavioral_modularity_runs(
             runs_csv=(
                 behavioral_baseline_runs_csv
@@ -918,6 +1052,68 @@ def build_manifest(
         )
     )
 
+    acoustic_records = (
+        select_behavioral_modularity_runs(
+            runs_csv=(
+                acoustic_baseline_runs_csv
+            ),
+            partition_root=(
+                acoustic_baseline_partition_root
+            ),
+            expected_seeds=(
+                expected_seeds
+            ),
+        )
+        + select_node2vec_runs(
+            runs_csv=(
+                acoustic_node2vec_runs_csv
+            ),
+            partition_root=(
+                acoustic_node2vec_partition_root
+            ),
+            expected_seeds=(
+                expected_seeds
+            ),
+        )
+        + select_smooth2_runs(
+            runs_csv=(
+                acoustic_smooth2_runs_csv
+            ),
+            partition_root=(
+                acoustic_smooth2_partition_root
+            ),
+            expected_seeds=(
+                expected_seeds
+            ),
+        )
+        + select_gae_runs(
+            runs_csv=(
+                acoustic_gae_combined_runs_csv
+            ),
+            partition_root=(
+                acoustic_gae_partition_root
+            ),
+            expected_seeds=(
+                expected_seeds
+            ),
+        )
+    )
+
+    acoustic_records = retag_records(
+        acoustic_records,
+        method_id_map={
+            "leiden_behavioral_balanced": "leiden_acoustic_balanced",
+            "louvain_behavioral_balanced": "louvain_acoustic_balanced",
+            "node2vec_behavioral_balanced": "node2vec_acoustic_balanced",
+            "smooth2_behavioral_control": "smooth2_acoustic_control",
+            "gae_behavioral_balanced": "gae_acoustic_balanced",
+        },
+        run_id_prefix="acoustic::",
+        graph_name="acoustic_top10_knn20_min0_40",
+    )
+
+    records = behavioral_records + acoustic_records
+
     manifest = (
         pd.DataFrame.from_records(
             records
@@ -958,6 +1154,41 @@ def build_manifest(
         )
 
     return manifest
+
+
+def retag_records(
+    records: list[dict[str, Any]],
+    *,
+    method_id_map: dict[str, str],
+    run_id_prefix: str,
+    graph_name: str,
+) -> list[dict[str, Any]]:
+    retagged: list[dict[str, Any]] = []
+
+    for record in records:
+        original_method_id = required_text(record["method_id"], "method_id")
+        method_id = method_id_map[original_method_id]
+        configuration = json.loads(
+            required_text(record["configuration_json"], "configuration_json")
+        )
+        configuration["graph"] = graph_name
+
+        retagged.append(
+            {
+                **record,
+                "method_order": int(METHOD_ORDER.index(method_id)),
+                "method_id": method_id,
+                "method_display_name": METHOD_DISPLAY_NAMES[method_id],
+                "run_id": f"{run_id_prefix}{required_text(record['run_id'], 'run_id')}",
+                "configuration_json": json.dumps(
+                    configuration,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ),
+            }
+        )
+
+    return retagged
 
 
 def load_labels(
@@ -1890,6 +2121,14 @@ def run_evaluation(
     smooth2_partition_root: Path,
     gae_combined_runs_csv: Path,
     gae_partition_root: Path,
+    acoustic_baseline_runs_csv: Path,
+    acoustic_baseline_partition_root: Path,
+    acoustic_node2vec_runs_csv: Path,
+    acoustic_node2vec_partition_root: Path,
+    acoustic_smooth2_runs_csv: Path,
+    acoustic_smooth2_partition_root: Path,
+    acoustic_gae_combined_runs_csv: Path,
+    acoustic_gae_partition_root: Path,
 ) -> None:
     if any(
         support < 1
@@ -1932,6 +2171,30 @@ def run_evaluation(
         ),
         gae_partition_root=(
             gae_partition_root
+        ),
+        acoustic_baseline_runs_csv=(
+            acoustic_baseline_runs_csv
+        ),
+        acoustic_baseline_partition_root=(
+            acoustic_baseline_partition_root
+        ),
+        acoustic_node2vec_runs_csv=(
+            acoustic_node2vec_runs_csv
+        ),
+        acoustic_node2vec_partition_root=(
+            acoustic_node2vec_partition_root
+        ),
+        acoustic_smooth2_runs_csv=(
+            acoustic_smooth2_runs_csv
+        ),
+        acoustic_smooth2_partition_root=(
+            acoustic_smooth2_partition_root
+        ),
+        acoustic_gae_combined_runs_csv=(
+            acoustic_gae_combined_runs_csv
+        ),
+        acoustic_gae_partition_root=(
+            acoustic_gae_partition_root
         ),
         expected_seeds=(
             expected_seeds
@@ -2071,6 +2334,30 @@ def run_evaluation(
             ),
             "gae_partition_root": str(
                 gae_partition_root
+            ),
+            "acoustic_baseline_runs_csv": str(
+                acoustic_baseline_runs_csv
+            ),
+            "acoustic_baseline_partition_root": str(
+                acoustic_baseline_partition_root
+            ),
+            "acoustic_node2vec_runs_csv": str(
+                acoustic_node2vec_runs_csv
+            ),
+            "acoustic_node2vec_partition_root": str(
+                acoustic_node2vec_partition_root
+            ),
+            "acoustic_smooth2_runs_csv": str(
+                acoustic_smooth2_runs_csv
+            ),
+            "acoustic_smooth2_partition_root": str(
+                acoustic_smooth2_partition_root
+            ),
+            "acoustic_gae_combined_runs_csv": str(
+                acoustic_gae_combined_runs_csv
+            ),
+            "acoustic_gae_partition_root": str(
+                acoustic_gae_partition_root
             ),
         },
         "configuration": {
@@ -2248,6 +2535,74 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--acoustic-baseline-runs-csv",
+        type=Path,
+        default=Path(
+            "results/acoustic_baselines_balanced_grid/"
+            "behavioral_baseline_runs.csv"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-baseline-partition-root",
+        type=Path,
+        default=Path(
+            "results/acoustic_baselines_balanced_grid"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-node2vec-runs-csv",
+        type=Path,
+        default=Path(
+            "results/acoustic_node2vec_final_candidates/"
+            "node2vec_clustering_runs.csv"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-node2vec-partition-root",
+        type=Path,
+        default=Path(
+            "results/acoustic_node2vec_final_candidates"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-smooth2-runs-csv",
+        type=Path,
+        default=Path(
+            "results/acoustic_feature_controls/"
+            "behavioral_feature_control_runs.csv"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-smooth2-partition-root",
+        type=Path,
+        default=Path(
+            "results/acoustic_feature_controls"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-gae-combined-runs-csv",
+        type=Path,
+        default=Path(
+            "results/acoustic_graph_autoencoder_final_candidates_summary/"
+            "graph_autoencoder_combined_runs.csv"
+        ),
+    )
+
+    parser.add_argument(
+        "--acoustic-gae-partition-root",
+        type=Path,
+        default=Path(
+            "results/acoustic_graph_autoencoder_final_candidates"
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -2282,5 +2637,29 @@ if __name__ == "__main__":
         ),
         gae_partition_root=(
             args.gae_partition_root
+        ),
+        acoustic_baseline_runs_csv=(
+            args.acoustic_baseline_runs_csv
+        ),
+        acoustic_baseline_partition_root=(
+            args.acoustic_baseline_partition_root
+        ),
+        acoustic_node2vec_runs_csv=(
+            args.acoustic_node2vec_runs_csv
+        ),
+        acoustic_node2vec_partition_root=(
+            args.acoustic_node2vec_partition_root
+        ),
+        acoustic_smooth2_runs_csv=(
+            args.acoustic_smooth2_runs_csv
+        ),
+        acoustic_smooth2_partition_root=(
+            args.acoustic_smooth2_partition_root
+        ),
+        acoustic_gae_combined_runs_csv=(
+            args.acoustic_gae_combined_runs_csv
+        ),
+        acoustic_gae_partition_root=(
+            args.acoustic_gae_partition_root
         ),
     )

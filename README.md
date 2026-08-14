@@ -117,6 +117,7 @@ The completed reviewer worksheets are copied to the repository root:
 ```text
 reviewer_01_manual_validation_top3_sample_seed_42.csv
 reviewer_02_manual_validation_top3_sample_seed_42.csv
+reviewer_03_manual_validation_top3_sample_seed_42.csv
 ```
 
 They correspond to the qualitative top-3 genre-suggestion audit. 
